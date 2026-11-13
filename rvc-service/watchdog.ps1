@@ -5,7 +5,7 @@
 
 $ErrorActionPreference = "Continue"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$MachineRoot = Join-Path (Split-Path -Parent $RepoRoot) "rvc-local"
+$MachineRoot = if ($env:POSTPREP_RVC_LOCAL_ROOT) { [IO.Path]::GetFullPath($env:POSTPREP_RVC_LOCAL_ROOT) } else { Join-Path (Split-Path -Parent $RepoRoot) "rvc-local" }
 $StartScript = Join-Path $PSScriptRoot "start-local-stack.ps1"
 $TokenFile = Join-Path $MachineRoot ".gateway-token"
 $LogFile = Join-Path $MachineRoot "watchdog.log"

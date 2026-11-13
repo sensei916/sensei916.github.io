@@ -14,7 +14,8 @@ try {
 $ErrorActionPreference = "Stop"
 $env:XDG_CONFIG_HOME = "D:\UserTemp\wrangler-config"
 $env:WRANGLER_LOG = "error"
-$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\rvc-local"))
+$SiteDir = Split-Path -Parent $PSScriptRoot
+$Root = if ($env:POSTPREP_RVC_LOCAL_ROOT) { [IO.Path]::GetFullPath($env:POSTPREP_RVC_LOCAL_ROOT) } else { [IO.Path]::GetFullPath((Join-Path $SiteDir "..\rvc-local")) }
 # Use the checked official-runtime virtual environment for both the GPU
 # service and the narrow proxy. The legacy local .venv can be stale after a
 # Python/uv upgrade, which otherwise leaves the public route unavailable
@@ -25,7 +26,6 @@ $TokenFile = Join-Path $Root ".gateway-token"
 $CfBin = Join-Path $Root "bin\cloudflared.exe"
 $TunnelLog = Join-Path $Root "tunnel.log"
 $LocalPort = if ($env:RVC_PORT) { $env:RVC_PORT } else { "8088" }
-$SiteDir = [IO.Path]::GetFullPath((Join-Path $Root "..\site"))
 # 窄代理端口：只暴露 /healthz、/v1/models、/v1/convert、/v1/output/<job>，隧道只指向它
 $ProxyPort = if ($env:RVC_PROXY_PORT) { $env:RVC_PROXY_PORT } else { "8090" }
 $ProxyScript = Join-Path $SiteDir "rvc-service\tunnel_proxy.py"
@@ -70,6 +70,7 @@ if (-not $healthy) {
   $env:RVC_WORK_ROOT = Join-Path $Root "work"
   $env:RVC_OUTPUT_ROOT = Join-Path $Root "output"
   $env:RVC_DIAGNOSTIC_ROOT = Join-Path $Root "diagnostics"
+  $env:RVC_SPEECH_ROOT = Join-Path $Root "讲话引擎"
   $env:RVC_SEPARATOR_MODELS_DIR = "D:\数据\rvc-runtime\pymss-models"
   $env:RVC_SEPARATOR_MODEL = "model_bs_roformer_ep_368_sdr_12.9628.ckpt"
   $env:RVC_SEPARATOR_DEVICE = "cuda"
