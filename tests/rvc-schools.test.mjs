@@ -41,6 +41,8 @@ test("all five Abydos voices have real browser assets", () => {
   for (const student of directory.schools[0].students) {
     const model = catalog.models.find(item => item.id === student[0]);
     assert.ok(model, student[0]);
+    assert.ok(model.chunks.length && model.retrieval, student[0]);
+    if (process.env.POSTPREP_SOURCE_ONLY === "1") continue;
     for (const asset of [...model.chunks, model.retrieval]) {
       assert.ok(fs.statSync(new URL("../" + asset, import.meta.url)).size > 0, asset);
     }

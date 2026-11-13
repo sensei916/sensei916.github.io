@@ -34,7 +34,9 @@ test('checkpoint-required Japanese encoder cannot be replaced with a same-dimens
   assert.equal(resolve({ rvcVersion: 'v1' }, catalog.baseModels).featureDimension, 256);
 });
 
-test('Japanese ONNX fragments match their immutable content hashes', async () => {
+test('Japanese ONNX fragments match their immutable content hashes', {
+  skip: process.env.POSTPREP_SOURCE_ONLY === '1' && 'Model binaries are hosted separately',
+}, async () => {
   const config = catalog.baseModels.hubertJapanese;
   const full = createHash('sha256');
   let bytes = 0;
