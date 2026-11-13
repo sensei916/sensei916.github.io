@@ -1,0 +1,26 @@
+# Service API
+fastapi==0.115.12
+python-multipart==0.0.20
+uvicorn[standard]==0.34.0
+edge-tts==7.2.8
+sherpa-onnx==1.13.8
+
+# Minimal inference dependencies used by the pinned official RVC source.
+# Torch/torchaudio are installed separately with the matching CUDA wheel.
+av>=15.1.0,<16
+faiss-cpu>=1.13.0,<2
+ffmpeg-python>=0.2.0,<1
+librosa>=0.10.2,<0.11
+matplotlib>=3.8.2,<4
+numpy>=1.26.4,<2
+praat-parselmouth>=0.4.5,<1
+scikit-learn>=1.6.0,<2
+scipy>=1.13.1,<2
+soundfile>=0.13.0,<1
+tensorboard>=2.19.0,<3
+transformers>=4.49.0,<4.50
+torchfcpe>=0.0.4,<0.1
+
+# Pinned official-RVC 2026 vocal/accompaniment separation backend.
+pymss==2.0.14
+pymss-core==0.1.4

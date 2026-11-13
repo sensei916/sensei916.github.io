@@ -1,0 +1,268 @@
+"""Narrow reverse proxy used by the temporary Cloudflare RVC tunnel.
+
+Only the server-to-server RVC routes are exposed.  The proxy keeps the GPU
+service bound to loopback and requires the same bearer token as the service,
+so a leaked trycloudflare URL cannot be used to enumerate models or submit
+audio without the Pages Function's server-side token.
+"""
+
+from __future__ import annotations
+
+import hmac
+import http.client
+import http.server
+import os
+import re
+import sys
+import threading
+import time
+from urllib.parse import parse_qs, urlsplit
+
+
+LISTEN_HOST = os.getenv("RVC_PROXY_HOST", "127.0.0.1")
+LISTEN_PORT = int(os.getenv("RVC_PROXY_PORT", "8090"))
+UPSTREAM_HOST = os.getenv("RVC_UPSTREAM_HOST", "127.0.0.1")
+UPSTREAM_PORT = int(os.getenv("RVC_UPSTREAM_PORT", "8088"))
+TOKEN = os.getenv("RVC_GATEWAY_TOKEN", "").strip()
+MAX_BODY_BYTES = 26 * 1024 * 1024
+MAX_TTS_BODY_BYTES = 8 * 1024
+JOB_RE = re.compile(r"^/v1/output/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", re.I)
+REMIX_JOB_RE = re.compile(r"^/v1/output/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/remix$", re.I)
+TRAIN_JOB_RE = re.compile(r"^/v1/training/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", re.I)
+TRAIN_ACTION_RE = re.compile(
+    r"^/v1/training/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/(?:start|cancel)$",
+    re.I,
+)
+TRAIN_UPLOAD_RE = re.compile(
+    r"^/v1/training/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/audio/(?:[0-9]|1[0-9])$",
+    re.I,
+)
+OUTPUT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+CHORUS_RE = re.compile(r"^/v1/chorus/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?:/convert|/stem/[1-4])?$", re.I)
+
+
+def _read_chunked(reader, max_bytes: int = MAX_BODY_BYTES) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        line = reader.readline(8192)
+        if not line:
+            raise ValueError("incomplete chunked body")
+        try:
+            size = int(line.split(b";", 1)[0].strip(), 16)
+        except ValueError as exc:
+            raise ValueError("invalid chunk size") from exc
+        if size == 0:
+            # Consume optional trailers and the terminating blank line.
+            while True:
+                trailer = reader.readline(8192)
+                if not trailer or trailer in (b"\r\n", b"\n"):
+                    return b"".join(chunks)
+        total += size
+        if total > max_bytes:
+            raise OverflowError("request body too large")
+        chunk = reader.read(size)
+        if len(chunk) != size or reader.read(2) != b"\r\n":
+            raise ValueError("incomplete chunked body")
+        chunks.append(chunk)
+
+
+class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt: str, *args) -> None:  # pragma: no cover - operational logging
+        # Never log query strings because output URLs contain one-time tokens.
+        message = re.sub(r'\?[^\s"]+', '?[redacted]', fmt % args)
+        sys.stderr.write("rvc-proxy: " + message + "\n")
+
+    def _json_error(self, status: int, code: str) -> None:
+        body = (f'{{"code":"{code}","details":{{}}}}').encode("utf-8")
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=UTF-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self) -> bool:
+        if len(TOKEN) < 32:
+            return False
+        provided = self.headers.get("Authorization", "")
+        return hmac.compare_digest(provided, f"Bearer {TOKEN}")
+
+    def _target(self) -> str | None:
+        parsed = urlsplit(self.path)
+        if parsed.path in {'/v1/chorus/status','/v1/chorus/analyze'}:
+            method = 'GET' if parsed.path.endswith('/status') else 'POST'
+            return parsed.path if self.command == method and not parsed.query else None
+        if CHORUS_RE.fullmatch(parsed.path):
+            method = 'POST' if parsed.path.endswith('/convert') else 'GET'
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            tokens = values.get('token', [])
+            if self.command == method and set(values) == {'token'} and len(tokens) == 1 and OUTPUT_TOKEN_RE.fullmatch(tokens[0]):
+                return f'{parsed.path}?token={tokens[0]}'
+            return None
+        if parsed.path == "/healthz":
+            if not parsed.query:
+                return parsed.path
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            model_ids = values.get("model_id", [])
+            if set(values) == {"model_id"} and len(model_ids) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_ids[0]):
+                return f"/healthz?model_id={model_ids[0]}"
+            return None
+        if parsed.path == "/v1/tts-health":
+            if self.command != 'GET': return None
+            if not parsed.query: return parsed.path
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            ids = values.get('model_id', [])
+            if set(values) == {'model_id'} and len(ids) == 1 and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', ids[0]):
+                return f'{parsed.path}?model_id={ids[0]}'
+            return None
+        if parsed.path == "/v1/models":
+            return parsed.path if not parsed.query else None
+        if parsed.path in {"/v1/tts", "/v1/tts/install", "/v1/tts/jobs"}:
+            return parsed.path if self.command == "POST" and not parsed.query else None
+        if parsed.path == "/v1/convert":
+            return parsed.path if self.command == "POST" and not parsed.query else None
+        if parsed.path == "/v1/training/init":
+            return parsed.path if self.command == "POST" and not parsed.query else None
+        if JOB_RE.fullmatch(parsed.path) and self.command == "GET":
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            token_values = values.get("token", [])
+            if len(token_values) == 1 and OUTPUT_TOKEN_RE.fullmatch(token_values[0]):
+                return f"{parsed.path}?token={token_values[0]}"
+        if REMIX_JOB_RE.fullmatch(parsed.path) and self.command == "POST":
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            token_values = values.get("token", [])
+            if len(token_values) == 1 and OUTPUT_TOKEN_RE.fullmatch(token_values[0]):
+                return f"{parsed.path}?token={token_values[0]}"
+        if (
+            (TRAIN_JOB_RE.fullmatch(parsed.path) and self.command == "GET")
+            or (TRAIN_ACTION_RE.fullmatch(parsed.path) and self.command == "POST")
+            or (TRAIN_UPLOAD_RE.fullmatch(parsed.path) and self.command == "POST")
+        ):
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            token_values = values.get("token", [])
+            if len(token_values) == 1 and OUTPUT_TOKEN_RE.fullmatch(token_values[0]):
+                return f"{parsed.path}?token={token_values[0]}"
+        return None
+
+    def _body(self) -> bytes:
+        path = urlsplit(self.path).path
+        max_bytes = (MAX_TTS_BODY_BYTES if path in {"/v1/tts", "/v1/tts/install", "/v1/tts/jobs"} else
+                     64 * 1024 if REMIX_JOB_RE.fullmatch(path) or CHORUS_RE.fullmatch(path) else MAX_BODY_BYTES)
+        transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
+        if "chunked" in transfer_encoding:
+            return _read_chunked(self.rfile, max_bytes)
+        value = self.headers.get("Content-Length")
+        if value is None:
+            raise ValueError("missing content length")
+        try:
+            length = int(value)
+        except ValueError as exc:
+            raise ValueError("invalid content length") from exc
+        if length < 0 or length > max_bytes:
+            raise OverflowError("request body too large")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ValueError("incomplete request body")
+        return body
+
+    def _forward(self) -> None:
+        if not self._authorized():
+            self._json_error(401, "UNAUTHORIZED")
+            return
+        target = self._target()
+        if target is None:
+            self._json_error(404, "ROUTE_NOT_EXPOSED")
+            return
+        body = b""
+        if self.command == "POST":
+            try:
+                body = self._body()
+            except OverflowError:
+                self._json_error(413, "RVC_AUDIO_TOO_LARGE")
+                return
+            except ValueError:
+                self._json_error(400, "INVALID_REQUEST_BODY")
+                return
+
+        headers = {
+            "Authorization": f"Bearer {TOKEN}",
+            "Host": f"{UPSTREAM_HOST}:{UPSTREAM_PORT}",
+            "Connection": "close",
+        }
+        if self.command == "POST":
+            content_type = self.headers.get("Content-Type", "")
+            path = urlsplit(self.path).path
+            json_action = (path in {"/v1/tts", "/v1/tts/install", "/v1/tts/jobs"} or REMIX_JOB_RE.fullmatch(path)
+                           or CHORUS_RE.fullmatch(path) and path.endswith("/convert"))
+            expected_type = "application/json" if json_action else "multipart/form-data"
+            if not content_type.lower().startswith(expected_type):
+                self._json_error(415, "UNSUPPORTED_MEDIA_TYPE")
+                return
+            headers["Content-Type"] = content_type
+            headers["Content-Length"] = str(len(body))
+        request_id = self.headers.get("X-PostPrep-Request-Id", "")
+        if request_id and len(request_id) <= 96:
+            headers["X-PostPrep-Request-Id"] = request_id
+        if self.command == "GET" and self.headers.get("Range"):
+            headers["Range"] = self.headers["Range"]
+
+        connection = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=190)
+        started = time.monotonic()
+        response_started = False
+        try:
+            connection.request(self.command, target, body=body if self.command == "POST" else None, headers=headers)
+            response = connection.getresponse()
+            self.close_connection = True
+            self.send_response(response.status, response.reason)
+            content_length = response.getheader("Content-Length")
+            for key in ("Content-Type", "Content-Range", "Accept-Ranges", "Cache-Control", "Content-Disposition", "X-Content-Type-Options", "Retry-After", "X-RVC-F0-Method", "X-RVC-Mix-Revision", "X-RVC-Remix-Available", "X-RVC-Engine", "X-RVC-Engine-Revision", "X-RVC-Reference-Sha256", "X-RVC-Backend-Build", "X-RVC-Speech-Steps"):
+                value = response.getheader(key)
+                if value:
+                    self.send_header(key, value)
+            if content_length:
+                self.send_header("Content-Length", content_length)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            response_started = True
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (OSError, http.client.HTTPException) as error:
+            trace = request_id if re.fullmatch(r"[A-Za-z0-9_-]{1,96}",request_id) else "-"
+            self.log_message("forward failed id=%s method=%s path=%s error=%s seconds=%.2f",
+                             trace,self.command,urlsplit(target).path,type(error).__name__,time.monotonic()-started)
+            if not response_started and not self.wfile.closed:
+                try:
+                    self._json_error(502, "UPSTREAM_UNAVAILABLE")
+                except OSError:
+                    pass
+        finally:
+            connection.close()
+
+    do_GET = _forward
+    do_POST = _forward
+
+
+def main() -> None:
+    if len(TOKEN) < 32:
+        raise SystemExit("RVC_GATEWAY_TOKEN must contain at least 32 characters")
+    server = http.server.ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
+    server.daemon_threads = True
+    print(f"RVC proxy listening on {LISTEN_HOST}:{LISTEN_PORT}; upstream is loopback-only", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

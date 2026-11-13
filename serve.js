@@ -1,0 +1,135 @@
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const configuredPort = Number(process.env.PORT ?? 8124);
+const PORT = Number.isInteger(configuredPort) && configuredPort >= 0 && configuredPort <= 65535 ? configuredPort : 8124;
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+// 本机 rvc-service（edge-tts 文本朗读）的目标地址。
+// serve.js 会把 /v1/tts* 反向代理到这里，从而同一 Wi-Fi 下所有设备只需连 8124 页面即可，
+// 点「一键适配」走同源即可自动配置成功，无需知道这个 8080、也无需跨域。
+const TTS_PROXY_TARGET = process.env.RVC_TTS_TARGET || "http://127.0.0.1:8080";
+const RVC_INFERENCE_TARGET = process.env.RVC_INFERENCE_TARGET || "http://127.0.0.1:8088";
+
+const MIME_MAP = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".otf": "font/otf",
+  ".svg": "image/svg+xml",
+  ".onnx": "application/octet-stream",
+  ".bin": "application/octet-stream",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".ogg": "audio/ogg",
+  ".webm": "audio/webm",
+};
+
+const server = http.createServer((req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+
+  if (req.method === "OPTIONS") {
+    // 允许对 /v1/tts 及 /v1/convert 的跨源预检
+    res.statusCode = 204;
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.end();
+    return;
+  }
+
+  let reqPath;
+  try {
+    reqPath = decodeURIComponent(req.url.split("?")[0]);
+    if (reqPath.includes("\0")) throw new Error("Invalid path");
+  } catch {
+    res.writeHead(400).end("Invalid request path");
+    return;
+  }
+  if (reqPath.startsWith('/rvc/chorus/')) {
+    proxy(req, res, req.url.replace(/^\/rvc\/chorus\//, '/v1/chorus/'), RVC_INFERENCE_TARGET);
+    return;
+  }
+
+  // 反向代理：把 /v1/tts* 转发到本机 rvc-service（edge-tts），实现全机免配置共享
+  if (reqPath === "/v1/tts" || reqPath === "/v1/tts-health" || reqPath === "/v1/tts/install" || reqPath === "/v1/tts/jobs") {
+    proxy(req, res, reqPath, TTS_PROXY_TARGET);
+    return;
+  }
+  // 反向代理：把 /rvc, /v1/convert, /v1/models, /v1/output, /healthz 转发到官方 RVC 推理服务
+  if (reqPath === "/rvc" || reqPath === "/healthz" || reqPath.startsWith("/v1/chorus/") || reqPath.startsWith("/v1/models") || reqPath.startsWith("/v1/convert") || reqPath.startsWith("/v1/output")) {
+    proxy(req, res, reqPath === "/rvc" ? "/v1/convert" : reqPath, RVC_INFERENCE_TARGET);
+    return;
+  }
+
+  if (reqPath === "/") reqPath = "/rvc.html";
+  if (reqPath.split(/[\\/]/).some(segment => segment.startsWith("."))) {
+    res.writeHead(403).end("Forbidden");
+    return;
+  }
+  const filePath = path.resolve(ROOT, "." + reqPath);
+  const insideRoot = file => file === ROOT || file.startsWith(ROOT + path.sep);
+  if (!insideRoot(filePath)) {
+    res.writeHead(403).end("Forbidden");
+    return;
+  }
+  let resolved;
+  try { resolved = fs.realpathSync(filePath); }
+  catch { res.writeHead(404).end("Not Found"); return; }
+  if (!insideRoot(resolved)) { res.writeHead(403).end("Forbidden"); return; }
+  if (!fs.statSync(resolved).isFile()) { res.writeHead(404).end("Not Found"); return; }
+
+  const ext = path.extname(resolved).toLowerCase();
+  res.setHeader("Content-Type", MIME_MAP[ext] || "application/octet-stream");
+  fs.createReadStream(resolved).pipe(res);
+});
+
+// 把请求转发到目标服务；请求体原样转发，响应原样回传（含 CORS）。
+function proxy(req, res, targetPath, baseTarget) {
+  const target = new URL(baseTarget + targetPath);
+  const upstream = http.request(
+    {
+      hostname: target.hostname,
+      port: target.port || (target.protocol === "https:" ? 443 : 80),
+      path: target.pathname + (req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""),
+      method: req.method,
+      headers: { ...req.headers, host: target.host },
+    },
+    (up) => {
+      res.statusCode = up.statusCode || 502;
+      res.setHeader("Content-Type", up.headers["content-type"] || "application/json");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      up.pipe(res);
+    }
+  );
+  upstream.on("error", () => {
+    res.statusCode = 502;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.end(JSON.stringify({ code: "RVC_SERVICE_UNAVAILABLE", message: "服务未启动或未连接" }));
+  });
+  req.pipe(upstream);
+}
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`====================================================`);
+  console.log(`  RVC AI 变声器网站服务已启动 (支持局域网多设备访问)`);
+  const activePort = server.address().port;
+  console.log(`  电脑本机访问: http://localhost:${activePort}/rvc.html`);
+  console.log(`  手机访问: http://<电脑局域网地址>:${activePort}/rvc.html`);
+  console.log(`  文本朗读代理: /v1/tts → ${TTS_PROXY_TARGET} (一键适配走同源，全机可用)`);
+  console.log(`====================================================`);
+});

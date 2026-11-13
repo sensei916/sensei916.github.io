@@ -1,0 +1,48 @@
+/* ---------- tool pages: paper surfaces, big quiet titles ---------- */
+$G body:not([data-page="home"]) main { padding-top: clamp(36px, 6vw, 80px); }
+$G main > header:first-child, $G main > div > header:first-child { position: relative; }
+$G body:not([data-page="home"]):not([data-page="404"]) main > header:first-child h1, $G body:not([data-page="home"]):not([data-page="404"]) main h1:first-of-type {
+  font-family: var(--v3-font); font-weight: 650; letter-spacing: -.04em; font-size: clamp(36px, 5.4vw, 72px); line-height: 1.04;
+  color: var(--v3-ink) !important; background: none; padding-bottom: .04em; text-wrap: balance;
+}
+html.v3[lang^="zh"] body:not([data-page="home"]) main h1:first-of-type { letter-spacing: -.03em; }
+/* the English kicker above titles becomes a quiet label */
+$G body:not([data-page="home"]) main > header:first-child > p:first-child { letter-spacing: 0 !important; text-transform: none; font-size: 14px; font-weight: 600; color: var(--v3-ink-3) !important; }
+$G body:not([data-page="home"]) main > header:first-child > p:last-child { font-size: clamp(17px, 1.4vw, 21px); line-height: 1.55; color: var(--v3-ink-2) !important; max-width: 34em; }
+
+/* content surfaces: the page's own white cards become paper sheets (no glass) */
+$G main :is(section, aside, article).bg-surface, $G main :is(section, aside, article).bg-white, $G main .lg {
+  background: var(--v3-paper) !important; border: 0 !important; border-radius: var(--v3-radius) !important;
+  box-shadow: var(--v3-shadow) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+}
+$G main .lg { padding: clamp(18px, 2.6vw, 30px); }
+$G main :is(section, aside).bg-surface :is(.bg-canvas, .bg-zinc-50, .bg-white, .bg-surface):not(button):not(input):not(textarea):not(select) {
+  background: var(--v3-well) !important; box-shadow: none !important;
+}
+$G main article:not(.h-tool) { background: var(--v3-paper) !important; border: 0 !important; border-radius: 18px !important; box-shadow: var(--v3-shadow) !important; color: var(--v3-ink); }
+$G main article :is(h2, h3, h4) { color: var(--v3-ink) !important; }
+
+/* platform chips (role=group) → hairline capsules; the pressed one is ink */
+$G main [role="group"] button, $G main #preset-list button { border-radius: 999px !important; }
+/* progress tracks & meters: hairline track, ink fill (accent when over is decided by the page's own colours) */
+$G main .bg-zinc-100 { background: var(--v3-line) !important; }
+$G #length-progress { background: var(--v3-ink) !important; }
+$G main [role="status"][class*="border"] { border-radius: 14px; }
+$G main .tabular-nums, $G main [class*="font-mono"] { font-variant-numeric: tabular-nums; }
+/* large stat numbers on tool pages */
+
+
+/* ---------- 404 ---------- */
+.v3-404 { min-height: calc(100svh - 200px); display: grid; align-items: center; padding: 40px 0 80px; }
+.v3-404 > div { width: min(1180px, calc(100% - 2 * max(20px, 4.5vw))); margin-inline: auto; }
+.v3-404-code { margin: 0; font: 600 14px/1.3 var(--v3-mono); color: var(--v3-ink-3); }
+.v3-404 h1 { font: 650 clamp(44px, 7vw, 96px)/1.04 var(--v3-font); letter-spacing: -.045em; margin: 18px 0 0; color: var(--v3-ink); text-wrap: balance; }
+html.v3[lang^="zh"] .v3-404 h1 { letter-spacing: -.035em; }
+.v3-404-url { margin: 28px 0 0; font: 400 clamp(17px, 1.6vw, 21px)/1.5 var(--v3-mono); color: var(--v3-ink-3); overflow-wrap: anywhere; }
+.v3-404-url s { text-decoration: line-through rgb(var(--v3-bad-rgb) / .8) 2px; color: var(--v3-ink-2); }
+.v3-404 p:not([class]) { color: var(--v3-ink-2); max-width: 30em; margin: 14px 0 0; line-height: 1.6; font-size: 18px; }
+.v3-404-links { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 36px; }
+.v3-404-links a { text-decoration: none; }
+
+/* classic (paper) UI on the v3-only pages keeps v3 tokens */
+html.v3[data-ui="classic"] body:is([data-page="home"], [data-page="404"]) { background: var(--v3-bg); color: var(--v3-ink); }

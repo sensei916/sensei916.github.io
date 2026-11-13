@@ -1,0 +1,454 @@
+const TEXT_RATE_LIMITER_BINDING = "POSTPREP_RATE_LIMITER";
+const RVC_RATE_LIMITER_BINDING = "POSTPREP_RVC_RATE_LIMITER";
+const RVC_TRAIN_RATE_LIMITER_BINDING = "POSTPREP_RVC_TRAIN_RATE_LIMITER";
+const GATEWAY_SECRET_BINDING = "POSTPREP_GATEWAY_SECRET";
+const RVC_DIRECT_BASE_BINDING = "POSTPREP_RVC_DIRECT_BASE_URL";
+const RVC_DIRECT_TOKEN_BINDING = "POSTPREP_RVC_INFERENCE_TOKEN";
+const MAX_RVC_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_RVC_TRAIN_UPLOAD_BYTES = 26 * 1024 * 1024;
+const MAX_RVC_TTS_BYTES = 8 * 1024;
+const DEFAULT_PUBLIC_SITE_ORIGINS = Object.freeze([
+  "https://sensei916.github.io",
+  "https://senseixiaomisensei-sudo.github.io",
+  "https://postprep-ae6.pages.dev",
+]);
+
+function normalizedHttpOrigin(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+function publicSiteOrigins(env) {
+  const configured = env && typeof env.ALLOWED_ORIGINS === "string" ? env.ALLOWED_ORIGINS : "";
+  const extraOrigins = configured.split(",").map(normalizedHttpOrigin).filter(Boolean);
+  return new Set([...DEFAULT_PUBLIC_SITE_ORIGINS, ...extraOrigins]);
+}
+
+function isAllowedOrigin(request, env) {
+  const origin = request.headers.get("Origin");
+  return Boolean(origin && publicSiteOrigins(env).has(origin));
+}
+
+function responseHeaders(request, env) {
+  const headers = new Headers({
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=UTF-8",
+    "X-Content-Type-Options": "nosniff",
+    Vary: "Origin",
+  });
+  const origin = request.headers.get("Origin");
+  if (origin && isAllowedOrigin(request, env)) headers.set("Access-Control-Allow-Origin", origin);
+  return headers;
+}
+
+function failure(request, env, status, code, message) {
+  return new Response(JSON.stringify({ code, message, details: {} }), {
+    status,
+    headers: responseHeaders(request, env),
+  });
+}
+
+function protectedGatewaySecret(env) {
+  return env && typeof env[GATEWAY_SECRET_BINDING] === "string" ? env[GATEWAY_SECRET_BINDING].trim() : "";
+}
+
+function configuredUpstream(env, binding) {
+  return env && typeof env[binding] === "string" ? env[binding].trim() : "";
+}
+
+function clientRateLimitKey(request, prefix) {
+  const origin = normalizedHttpOrigin(request.headers.get("Origin")) || "unknown-origin";
+  const ip = String(request.headers.get("CF-Connecting-IP") || "unknown-ip").trim();
+  return `${prefix}:${origin}:${ip.slice(0, 128)}`;
+}
+
+async function enforceRateLimit(request, env, binding, prefix) {
+  const limiter = env && env[binding];
+  if (!limiter || typeof limiter.limit !== "function") {
+    return { error: { status: 503, code: "RATE_LIMITER_NOT_CONFIGURED", message: "Cloud processing safeguards are not configured" } };
+  }
+  try {
+    const result = await limiter.limit({ key: clientRateLimitKey(request, prefix) });
+    if (result && result.success === true) return { ok: true };
+    if (result && result.success === false) {
+      return { error: { status: 429, code: "RATE_LIMITED", message: "Please wait before requesting more cloud processing" } };
+    }
+    return { error: { status: 503, code: "RATE_LIMITER_UNAVAILABLE", message: "Cloud processing safeguards are temporarily unavailable" } };
+  } catch {
+    return { error: { status: 503, code: "RATE_LIMITER_UNAVAILABLE", message: "Cloud processing safeguards are temporarily unavailable" } };
+  }
+}
+
+function isOutputJobId(value) {
+  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(String(value || ""));
+}
+
+function isOutputToken(value) {
+  return /^[A-Za-z0-9_-]{32,128}$/u.test(String(value || ""));
+}
+
+function requestRoute(request) {
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return { error: { status: 400, code: "INVALID_REQUEST_URL", message: "Invalid request URL" } };
+  }
+  const path = url.pathname.replace(/\/+$/u, "") || "/";
+  const chorus = path.match(/^\/rvc\/chorus\/(status|analyze|[a-f0-9-]{36}(?:\/convert|\/stem\/[1-4])?)$/iu);
+  if (chorus) {
+    const suffix = chorus[1], jobId = suffix.split("/")[0];
+    const token = url.searchParams.get("token") || "";
+    if (!["status", "analyze"].includes(suffix) && (!isOutputJobId(jobId) || !isOutputToken(token))) {
+      return { error: { status: 400, code: "INVALID_RVC_OUTPUT_TOKEN", message: "Invalid chorus session" } };
+    }
+    const post = suffix === "analyze" || suffix.endsWith("/convert");
+    return { id: "rvc-chorus", upstreamBinding: "POSTPREP_RVC_UPSTREAM_URL",
+      method: post ? "POST" : "GET", rateBinding: post ? RVC_RATE_LIMITER_BINDING : TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: post ? "rvc-chorus" : "rvc-chorus-status",
+      skipRateLimit: !post && suffix !== 'status',
+      maxBytes: suffix === "analyze" ? MAX_RVC_UPLOAD_BYTES + 1024 * 1024 : 64 * 1024,
+      directPath: `/v1/chorus/${suffix}`, chorusSuffix: suffix, token,
+      message: "Use the chorus route's supported method" };
+  }
+  if (path === "/" || path === "/api/text" || path === "/text") {
+    return {
+      id: "text",
+      upstreamBinding: "POSTPREP_UPSTREAM_URL",
+      method: "POST",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "text",
+      message: "Use POST for text processing",
+    };
+  }
+  if (path === "/rvc") {
+    return {
+      id: "rvc",
+      upstreamBinding: "POSTPREP_RVC_UPSTREAM_URL",
+      method: "POST",
+      rateBinding: RVC_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc",
+      maxBytes: MAX_RVC_UPLOAD_BYTES,
+      message: "Use POST for voice conversion",
+    };
+  }
+  if (path === "/rvc/status") {
+    return {
+      id: "rvc-status",
+      modelId: /^[A-Za-z0-9_-]{1,64}$/u.test(url.searchParams.get("modelId") || "")
+        ? url.searchParams.get("modelId") : "",
+      upstreamBinding: "POSTPREP_RVC_STATUS_UPSTREAM_URL",
+      method: "GET",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-status",
+      message: "Use GET for service status",
+    };
+  }
+  if (path === "/rvc/models") {
+    return {
+      id: "rvc-models",
+      upstreamBinding: "POSTPREP_RVC_MODELS_UPSTREAM_URL",
+      method: "GET",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-models",
+      message: "Use GET for the voice list",
+    };
+  }
+  if (path === "/rvc/tts/health") {
+    return {
+      id: "rvc-tts-health",
+      modelId: /^[A-Za-z0-9_-]{1,64}$/u.test(url.searchParams.get("modelId") || "") ? url.searchParams.get("modelId") : "",
+      method: "GET",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-tts-health",
+      skipRateLimit: true,
+      directPath: "/v1/tts-health",
+      message: "Use GET for text-to-speech status",
+    };
+  }
+  if (path === "/rvc/tts/install") {
+    return {id: "rvc-tts-install", method: "POST", rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-tts-install", maxBytes: 1024, directPath: "/v1/tts/install",
+      message: "Use POST to install the optional TTS model"};
+  }
+  if (path === "/rvc/tts/jobs") {
+    return {id:"rvc-tts-job",method:"POST",rateBinding:TEXT_RATE_LIMITER_BINDING,
+      ratePrefix:"rvc-tts",maxBytes:MAX_RVC_TTS_BYTES,directPath:"/v1/tts/jobs",
+      message:"Use POST for a background TTS task"};
+  }
+  if (path === "/rvc/tts") {
+    return {
+      id: "rvc-tts",
+      method: "POST",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-tts",
+      maxBytes: MAX_RVC_TTS_BYTES,
+      directPath: "/v1/tts",
+      message: "Use POST for text-to-speech",
+    };
+  }
+  const remixMatch = path.match(/^\/rvc\/output\/([^/]+)\/remix$/u);
+  if (remixMatch) {
+    const jobId = remixMatch[1];
+    const token = url.searchParams.get("token") || "";
+    if (!isOutputJobId(jobId) || !isOutputToken(token)) {
+      return { error: { status: 400, code: "INVALID_RVC_OUTPUT_TOKEN", message: "Invalid voice output address" } };
+    }
+    return {
+      id: "rvc-output-remix",
+      upstreamBinding: "POSTPREP_RVC_OUTPUT_UPSTREAM_URL",
+      method: "POST",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-remix",
+      maxBytes: 64 * 1024,
+      directPath: `/v1/output/${jobId}/remix`,
+      message: "Use POST to update the song mix",
+      jobId,
+      token,
+    };
+  }
+  const outputMatch = path.match(/^\/rvc\/output\/([^/]+)$/u);
+  if (outputMatch) {
+    const jobId = outputMatch[1];
+    const token = url.searchParams.get("token") || "";
+    if (!isOutputJobId(jobId) || !isOutputToken(token)) {
+      return { error: { status: 400, code: "INVALID_RVC_OUTPUT_TOKEN", message: "Invalid voice output address" } };
+    }
+    return {
+      id: "rvc-output",
+      upstreamBinding: "POSTPREP_RVC_OUTPUT_UPSTREAM_URL",
+      method: "GET",
+      rateBinding: TEXT_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-output",
+      skipRateLimit: true,
+      message: "Use GET for voice output",
+      jobId,
+      token,
+    };
+  }
+  if (path === "/rvc/train/init") {
+    return {
+      id: "rvc-train-init",
+      method: "POST",
+      rateBinding: RVC_TRAIN_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-train-init",
+      maxBytes: 64 * 1024,
+      directPath: "/v1/training/init",
+      message: "Use POST to create a training job",
+    };
+  }
+  const trainUploadMatch = path.match(/^\/rvc\/train\/upload\/([^/]+)\/([0-9]|1[0-9])$/u);
+  if (trainUploadMatch) {
+    const jobId = trainUploadMatch[1];
+    const token = url.searchParams.get("token") || "";
+    if (!isOutputJobId(jobId) || !isOutputToken(token)) {
+      return { error: { status: 400, code: "INVALID_RVC_TRAINING_TOKEN", message: "Invalid training upload address" } };
+    }
+    return {
+      id: "rvc-train-upload",
+      method: "POST",
+      rateBinding: RVC_TRAIN_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-train-upload",
+      maxBytes: MAX_RVC_TRAIN_UPLOAD_BYTES,
+      directPath: `/v1/training/${jobId}/audio/${trainUploadMatch[2]}`,
+      token,
+      message: "Use POST to upload training audio",
+    };
+  }
+  const trainActionMatch = path.match(/^\/rvc\/train\/(start|cancel)\/([^/]+)$/u);
+  if (trainActionMatch) {
+    const jobId = trainActionMatch[2];
+    const token = url.searchParams.get("token") || "";
+    if (!isOutputJobId(jobId) || !isOutputToken(token)) {
+      return { error: { status: 400, code: "INVALID_RVC_TRAINING_TOKEN", message: "Invalid training action address" } };
+    }
+    return {
+      id: `rvc-train-${trainActionMatch[1]}`,
+      method: "POST",
+      rateBinding: RVC_TRAIN_RATE_LIMITER_BINDING,
+      ratePrefix: `rvc-train-${trainActionMatch[1]}`,
+      maxBytes: 64 * 1024,
+      directPath: `/v1/training/${jobId}/${trainActionMatch[1]}`,
+      token,
+      message: "Use POST for this training action",
+    };
+  }
+  const trainStatusMatch = path.match(/^\/rvc\/train\/status\/([^/]+)$/u);
+  if (trainStatusMatch) {
+    const jobId = trainStatusMatch[1];
+    const token = url.searchParams.get("token") || "";
+    if (!isOutputJobId(jobId) || !isOutputToken(token)) {
+      return { error: { status: 400, code: "INVALID_RVC_TRAINING_TOKEN", message: "Invalid training status address" } };
+    }
+    return {
+      id: "rvc-train-status",
+      method: "GET",
+      rateBinding: RVC_TRAIN_RATE_LIMITER_BINDING,
+      ratePrefix: "rvc-train-status",
+      directPath: `/v1/training/${jobId}`,
+      token,
+      message: "Use GET for training status",
+    };
+  }
+  return { error: { status: 404, code: "ROUTE_NOT_FOUND", message: "This gateway route is not available" } };
+}
+
+function directRvcToken(env) {
+  return configuredUpstream(env, RVC_DIRECT_TOKEN_BINDING);
+}
+
+function resolvedDirectRvcUrl(route, env) {
+  if (!route.id.startsWith("rvc")) return "";
+  const configured = configuredUpstream(env, RVC_DIRECT_BASE_BINDING);
+  const token = directRvcToken(env);
+  if (!configured && !token) return "";
+  if (!configured || token.length < 32) return "";
+  try {
+    const url = new URL(configured);
+    if (
+      url.protocol !== "https:"
+      || !url.hostname.endsWith(".trycloudflare.com")
+      || url.username
+      || url.password
+      || url.port
+    ) return "";
+    const paths = {
+      rvc: "/v1/convert",
+      "rvc-status": "/healthz",
+      "rvc-models": "/v1/models",
+      "rvc-output": `/v1/output/${route.jobId || ""}`,
+    };
+    url.pathname = route.directPath || paths[route.id] || "/";
+    url.search = "";
+    url.hash = "";
+    if ((route.id === "rvc-output" || route.id === "rvc-output-remix")
+        || route.id === "rvc-chorus" && route.token
+        || route.id.startsWith("rvc-train-") && route.token) {
+      url.searchParams.set("token", route.token);
+    }
+    if (["rvc-status", "rvc-tts-health"].includes(route.id) && route.modelId) {
+      url.searchParams.set("model_id", route.modelId);
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function resolvedUpstreamUrl(route, env) {
+  const direct = resolvedDirectRvcUrl(route, env);
+  if (direct) return direct;
+  const configured = configuredUpstream(env, route.upstreamBinding);
+  if (!configured) return "";
+  try {
+    const url = new URL(configured);
+    if (url.protocol !== "https:") return "";
+    if (route.id === "rvc-chorus") {
+      url.pathname = `/api/rvc-chorus/${route.chorusSuffix}`;
+      url.search = "";
+      if (route.token) url.searchParams.set("token", route.token);
+    }
+    if (route.id === "rvc-output" || route.id === "rvc-output-remix") {
+      url.searchParams.set("job", route.jobId);
+      url.searchParams.set("token", route.token);
+      if (route.id === "rvc-output-remix") url.pathname = "/api/rvc-remix";
+    }
+    if (["rvc-status", "rvc-tts-health"].includes(route.id) && route.modelId) {
+      url.searchParams.set("modelId", route.modelId);
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function declaredRequestIsTooLarge(request, maxBytes) {
+  if (!maxBytes) return false;
+  const declaredLength = Number.parseInt(request.headers.get("Content-Length") || "", 10);
+  return Number.isFinite(declaredLength) && declaredLength > maxBytes;
+}
+
+function preflightResponse(request, env, route) {
+  const headers = responseHeaders(request, env);
+  headers.set("Allow", `${route.method}, OPTIONS`);
+  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Access-Control-Allow-Methods", `${route.method}, OPTIONS`);
+  headers.set("Access-Control-Max-Age", "600");
+  return new Response(null, { status: 204, headers });
+}
+
+export default {
+  async fetch(request, env) {
+    if (!isAllowedOrigin(request, env)) return failure(request, env, 403, "ORIGIN_NOT_ALLOWED", "Origin is not allowed");
+
+    const routeResult = requestRoute(request);
+    if (routeResult.error) return failure(request, env, routeResult.error.status, routeResult.error.code, routeResult.error.message);
+    const route = routeResult;
+    const method = request.method.toUpperCase();
+
+    if (method === "OPTIONS") return preflightResponse(request, env, route);
+    if (method !== route.method) return failure(request, env, 405, "METHOD_NOT_ALLOWED", route.message);
+    if (declaredRequestIsTooLarge(request, route.maxBytes)) {
+      return failure(request, env, 413, "RVC_AUDIO_TOO_LARGE", "The audio upload is too large");
+    }
+
+    const gatewaySecret = protectedGatewaySecret(env);
+    const directRvc = route.id.startsWith("rvc") && Boolean(configuredUpstream(env, RVC_DIRECT_BASE_BINDING));
+    const upstreamUrl = resolvedUpstreamUrl(route, env);
+    if ((!directRvc && !gatewaySecret) || !upstreamUrl) {
+      const code = route.id.startsWith("rvc") ? "RVC_BACKEND_NOT_CONFIGURED" : "GATEWAY_NOT_CONFIGURED";
+      return failure(request, env, 503, code, "Cloud processing safeguards are not configured");
+    }
+
+    if (!route.skipRateLimit) {
+      const rateLimit = await enforceRateLimit(request, env, route.rateBinding, route.ratePrefix);
+      if (rateLimit.error) {
+        const response = failure(request, env, rateLimit.error.status, rateLimit.error.code, rateLimit.error.message);
+        if (rateLimit.error.status === 429) response.headers.set("Retry-After", "60");
+        return response;
+      }
+    }
+
+    const headers = new Headers();
+    const requestId = crypto.randomUUID();
+    const contentType = request.headers.get("Content-Type");
+    const origin = request.headers.get("Origin");
+    const visitorIp = request.headers.get("CF-Connecting-IP");
+    if (contentType && route.method === "POST") headers.set("Content-Type", contentType);
+    const range = request.headers.get("Range");
+    if (range && ((route.id === "rvc-chorus" && route.method === "GET") ||
+        (route.id === "rvc-output" && /^bytes=(?:\d+-\d*|-\d+)$/u.test(range)))) {
+      headers.set("Range", range);
+    }
+    headers.set("X-PostPrep-Request-Id", requestId);
+    if (origin) headers.set("Origin", origin);
+    if (visitorIp) headers.set("CF-Connecting-IP", visitorIp);
+    if (directRvc) headers.set("Authorization", `Bearer ${directRvcToken(env)}`);
+    else headers.set("X-PostPrep-Gateway", gatewaySecret);
+
+    try {
+      const upstream = await fetch(upstreamUrl, {
+        method: route.method,
+        headers,
+        body: route.method === "POST" ? request.body : undefined,
+      });
+      const upstreamHeaders = new Headers(upstream.headers);
+      upstreamHeaders.set("Cache-Control", "no-store");
+      upstreamHeaders.set("X-Content-Type-Options", "nosniff");
+      upstreamHeaders.set("Vary", "Origin");
+      upstreamHeaders.set("Access-Control-Allow-Origin", origin);
+      upstreamHeaders.set("Access-Control-Expose-Headers", "Retry-After, X-PostPrep-Request-Id, X-RVC-F0-Method, X-RVC-Mix-Revision, X-RVC-Remix-Available, X-RVC-Engine, X-RVC-Engine-Revision, X-RVC-Reference-Sha256, X-RVC-Backend-Build, X-RVC-Speech-Steps");
+      upstreamHeaders.set("X-PostPrep-Request-Id", requestId);
+      return new Response(upstream.body, { status: upstream.status, headers: upstreamHeaders });
+    } catch {
+      const response = failure(request, env, 502, "UPSTREAM_UNAVAILABLE", "Cloud processing is temporarily unavailable");
+      response.headers.set("Access-Control-Expose-Headers", "Retry-After, X-PostPrep-Request-Id");
+      response.headers.set("X-PostPrep-Request-Id", requestId);
+      return response;
+    }
+  },
+};

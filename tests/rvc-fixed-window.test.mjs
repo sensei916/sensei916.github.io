@@ -1,0 +1,351 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const source = await readFile(new URL("../assets/rvc-engine/inference.worker.js", import.meta.url), "utf8");
+
+function extractFunction(name) {
+  const start = source.indexOf(`function ${name}`);
+  assert.ok(start >= 0, `missing ${name}`);
+  const declarationStart = source.slice(Math.max(0, start - 6), start) === "async " ? start - 6 : start;
+  const bodyStart = source.indexOf(") {", start) + 2;
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}" && --depth === 0) return source.slice(declarationStart, index + 1);
+  }
+  throw new Error(`unterminated ${name}`);
+}
+
+const processFixedWindows = Function(
+  `"use strict"; return (${extractFunction("processAudioInFixedFrameWindows")});`,
+)();
+
+const stabilizeAnalysisBoundary = Function(
+  `"use strict"; return (${extractFunction("stabilizeAnalysisWindowBoundary")});`,
+)();
+
+test('shared content uses one 50 Hz grid and identical overlap, without feature averaging', async()=>{
+  const resolve=Function('processAudioInFixedFrameWindows',`return (${extractFunction('resolveContentTimeline')});`)(processFixedWindows);
+  const slice=Function(`return (${extractFunction('sliceContentTimeline')});`)();
+  const observed=[];let calls=0;
+  const timeline=await resolve(new Float32Array(16000*3),{inputSampleRate:16000,lookAheadDuration:.04},
+    async data=>{const id=++calls;return {hiddenStates:new Float32Array(104*2).fill(id),
+      featureSize:2,frameCount:52,upsampledFrameCount:104};},row=>observed.push(row));
+  assert.ok(observed.every(row=>row.analysisStartSample%320===0));
+  assert.ok(observed.slice(1).some(row=>row.independentContextDifferenceRms>0));
+  assert.ok([...timeline.hiddenStates].every(value=>Number.isInteger(value)),'no averages of phoneme features');
+  const a=slice(timeline,0,100),b=slice(timeline,65*160,100);
+  assert.deepEqual(a.hiddenStates.slice(65*2),b.hiddenStates.slice(0,35*2));
+  assert.deepEqual(b.hiddenStates.slice(0,2),timeline.hiddenStates.slice(130,132),'odd synthesis starts still use absolute rows');
+});
+
+test('content grid and initial windows are unchanged across the old 20 second threshold',async()=>{
+  const resolve=Function('processAudioInFixedFrameWindows',`return (${extractFunction('resolveContentTimeline')});`)(processFixedWindows);
+  const beginnings=[];
+  for(const seconds of [19.9,20.1]) {
+    const starts=[];
+    await resolve(new Float32Array(Math.round(seconds*16000)),{inputSampleRate:16000,lookAheadDuration:.04},
+      async()=>({hiddenStates:new Float32Array(104),featureSize:1,frameCount:52,upsampledFrameCount:104}),
+      row=>starts.push(row.analysisStartSample));
+    beginnings.push(starts.slice(0,25));
+  }
+  assert.deepEqual(beginnings[0],beginnings[1]);
+});
+
+test('shared priors slice identical absolute rows through odd starts and reflected edges',()=>{
+  const slice=Function(`return (${extractFunction('slicePriorTimeline')});`)();
+  const timeline={mean:Float32Array.from({length:400},(_,i)=>i),
+    logs:Float32Array.from({length:400},(_,i)=>-i),channels:2,frames:200};
+  const a=slice(timeline,0,100),b=slice(timeline,65,100);
+  for(let channel=0;channel<2;channel++) {
+    assert.deepEqual(a.mean.slice(channel*100+65,(channel+1)*100),b.mean.slice(channel*100,channel*100+35));
+    assert.deepEqual(a.logs.slice(channel*100+65,(channel+1)*100),b.logs.slice(channel*100,channel*100+35));
+  }
+  const reflected=slice(timeline,-4,10);
+  assert.deepEqual([...reflected.mean.slice(0,6)],[4,3,2,1,0,1]);
+  assert.deepEqual([...slice(timeline,198,6).mean.slice(0,6)],[198,199,198,197,196,195]);
+});
+
+test('content analysis rejects a half-grid context instead of silently shifting feature centres',async()=>{
+  const resolve=Function('processAudioInFixedFrameWindows',`return (${extractFunction('resolveContentTimeline')});`)(processFixedWindows);
+  await assert.rejects(resolve(new Float32Array(16000),{contentAnalysisContext:.15},
+    async()=>{throw new Error('must fail before inference');}),/aligned content analysis/);
+});
+
+test('whole short recording content analysis can exceed six seconds without changing its absolute grid',async()=>{
+  const resolve=Function('processAudioInFixedFrameWindows',`return (${extractFunction('resolveContentTimeline')});`)(processFixedWindows);
+  const starts=[];
+  const timeline=await resolve(new Float32Array(144150),{contentAnalysisFrames:936,inputSampleRate:16000,lookAheadDuration:.04},
+    async data=>{const frames=Math.floor(data.length/160);return {hiddenStates:new Float32Array(frames).fill(7),
+      featureSize:1,frameCount:frames/2,upsampledFrameCount:frames};},row=>starts.push(row.analysisStartSample));
+  assert.equal(starts.length,1);
+  assert.equal(Math.abs(starts[0]%320),0);
+  assert.equal(timeline.upsampledFrameCount,902);
+  assert.ok([...timeline.hiddenStates].every(value=>value===7));
+});
+
+test("overlap octave disagreement never creates a fabricated slide", () => {
+  const features = { hiddenStates: new Float32Array(200), featureSize: 2, upsampledFrameCount: 100 };
+  const previous = { f0: new Float32Array(100).fill(220) };
+  const current = { f0: new Float32Array(100).fill(440) };
+  const result = stabilizeAnalysisBoundary(features, current, features, previous, 95, 5);
+  assert.ok([...result.pitch.f0].every(hz => hz === 220 || hz === 440));
+});
+
+test("short unvoiced leading consonant is not filled from another window", () => {
+  const features = { hiddenStates: new Float32Array(200), featureSize: 2, upsampledFrameCount: 100 };
+  const previous = { f0: new Float32Array(100).fill(220) };
+  const current = { f0: new Float32Array(100).fill(220) };
+  current.f0[0] = 0;
+  current.f0[1] = 0;
+  const result = stabilizeAnalysisBoundary(features, current, features, previous, 95, 5);
+  assert.equal(result.pitch.f0[0], 0);
+  assert.equal(result.pitch.f0[1], 0);
+});
+
+const preferredInferenceBackends = Function(
+  `"use strict"; return (${extractFunction("preferredInferenceBackends")});`,
+)();
+
+const resolveInferenceBackends = Function(
+  `"use strict"; const preferredInferenceBackends = arguments[0]; return (${extractFunction("resolveInferenceBackends")});`,
+)(preferredInferenceBackends);
+
+const suppressHarshBursts = Function(`
+  "use strict";
+  ${extractFunction("createBiquadLowpass")}
+  ${extractFunction("applyBiquadFilterInPlace")}
+  return (${extractFunction("suppressDetectedHarshBursts")});
+`)();
+
+test("unverified local band subtraction stays outside the default pipeline", () => {
+  assert.doesNotMatch(source, /finalAudio = adaptiveRvcBandRepair\(finalAudio/u);
+  assert.match(source, /finalAudio = suppressDetectedHarshBursts\(finalAudio, finalSr, burstDiagnostics\)/u);
+});
+
+test("fixed browser RVC windows overlap and crossfade without changing duration", async () => {
+  const audio = new Float32Array(40_000); // 2.5 seconds at 16 kHz
+  const windows = [];
+  const progress = [];
+  const output = await processFixedWindows(
+    audio,
+    async (chunk) => {
+      windows.push(chunk.data.length);
+      return new Float32Array(40_000); // one 100-frame, 40 kHz model output
+    },
+    { inputSampleRate: 16_000, outputSampleRate: 40_000, frameCount: 100, lookAheadDuration: 0.04 },
+    (current, total) => progress.push([current, total]),
+  );
+  assert.deepEqual(windows, [16_640, 16_640, 16_640]);
+  assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]]);
+  assert.equal(output.length, 100_000); // 2.5 seconds; the padded tail is removed
+});
+
+test("fixed browser RVC windows smooth a discontinuity at each one-second boundary", async () => {
+  const audio = new Float32Array(40_000);
+  const output = await processFixedWindows(
+    audio,
+    async (_chunk, current) => {
+      const samples = new Float32Array(40_000);
+      samples.fill(current === 1 ? -1 : 1);
+      return samples;
+    },
+    { inputSampleRate: 16_000, outputSampleRate: 40_000, frameCount: 100, lookAheadDuration: 0.04 },
+  );
+  assert.equal(output.length, 100_000);
+  const firstJoin = 38_000;
+  assert.ok(Math.abs(output[firstJoin] - output[firstJoin - 1]) < 0.01);
+  assert.ok(output[firstJoin] > -1 && output[firstJoin] < 1);
+});
+
+test("long browser RVC windows crop symmetric context without changing the source timeline", async () => {
+  const input = Float32Array.from({ length: 260 }, (_, index) => Math.sin(index / 9));
+  const output = await processFixedWindows(
+    input,
+    async (chunk) => new Float32Array(chunk.data),
+    {
+      inputSampleRate: 100,
+      outputSampleRate: 100,
+      frameCount: 100,
+      contextDuration: 0.10,
+      crossfadeDuration: 0.05,
+      lookAheadDuration: 0,
+    },
+  );
+
+  assert.equal(output.length, input.length);
+  let maximumError = 0;
+  for (let index = 0; index < input.length; index++) {
+    maximumError = Math.max(maximumError, Math.abs(output[index] - input[index]));
+  }
+  assert.ok(maximumError < 1e-6, `context crop changed aligned audio by ${maximumError}`);
+});
+
+test("long browser RVC context removes synthetic window-edge corruption before merging", async () => {
+  const input = new Float32Array(260).fill(0.2);
+  const output = await processFixedWindows(
+    input,
+    async (chunk) => {
+      const processed = new Float32Array(chunk.data.slice(0, 100));
+      processed.fill(1, 0, 10);
+      processed.fill(-1, 90, 100);
+      return processed;
+    },
+    {
+      inputSampleRate: 100,
+      outputSampleRate: 100,
+      frameCount: 100,
+      contextDuration: 0.10,
+      crossfadeDuration: 0.05,
+      lookAheadDuration: 0,
+    },
+  );
+
+  assert.equal(output.length, input.length);
+  assert.ok(Array.from(output).every((sample) => Math.abs(sample - 0.2) < 1e-6));
+});
+
+test("long browser RVC overlap corrects strong opposite-polarity windows", async () => {
+  const input = new Float32Array(260).fill(0.2);
+  let current = 0;
+  const output = await processFixedWindows(input, async () => {
+    current += 1;
+    return new Float32Array(100).fill(current % 2 === 1 ? 0.4 : -0.4);
+  }, { inputSampleRate: 100, outputSampleRate: 100, frameCount: 100, contextDuration: 0.15, crossfadeDuration: 0.40, lookAheadDuration: 0 });
+  assert.equal(output.length, input.length);
+  assert.ok(output.every((value) => Math.abs(value - 0.4) < 1e-6));
+});
+
+test("20-minute PCM at real sample rates merges completely without retaining all windows", async () => {
+  const input = new Float32Array(1200 * 16000).fill(0.125);
+  input[input.length - 1] = 0.25;
+  let completed = 0;
+  const output = await processFixedWindows(input, async (chunk) => {
+    completed++;
+    return Float32Array.from({ length: 40000 }, (_, index) => chunk.data[Math.floor(index * 16000 / 40000)]);
+  }, { inputSampleRate: 16000, outputSampleRate: 40000, frameCount: 100, contextDuration: 0.15, crossfadeDuration: 0.05, lookAheadDuration: 0.04 });
+  assert.equal(output.length, 1200 * 40000);
+  assert.ok(completed > 1800);
+  assert.equal(output[0], 0.125);
+  assert.equal(output[output.length - 1], 0.25);
+  assert.ok(output.every(value => Number.isFinite(value) && value >= 0.125 && value <= 0.25));
+  assert.doesNotMatch(extractFunction("processAudioInFixedFrameWindows"), /processedChunks/u);
+});
+
+test("short zero-context windows retain zero padding at the last edge", async () => {
+  let tail;
+  await processFixedWindows(new Float32Array(50).fill(0.2), async (chunk) => {
+    tail = chunk.data;
+    return chunk.data;
+  }, { inputSampleRate: 100, outputSampleRate: 100, frameCount: 100, contextDuration: 0, lookAheadDuration: 0.04 });
+  assert.ok(tail.slice(50).every(value => value === 0));
+});
+
+test("local RVC prefers WebGPU only when the browser exposes it and keeps WASM fallback", () => {
+  assert.deepEqual(preferredInferenceBackends({ gpu: { requestAdapter() {} } }), ["webgpu", "wasm"]);
+  assert.deepEqual(preferredInferenceBackends({}), ["wasm"]);
+  assert.deepEqual(preferredInferenceBackends(null), ["wasm"]);
+});
+
+test("local RVC verifies a GPU adapter before selecting WebGPU", async () => {
+  const runtimeEnvironment = { webgpu: {} };
+  const adapter = { name: "test-adapter" };
+  assert.deepEqual(
+    await resolveInferenceBackends({ gpu: { requestAdapter: async () => adapter } }, runtimeEnvironment),
+    ["webgpu", "wasm"],
+  );
+  assert.equal(runtimeEnvironment.webgpu.adapter, adapter);
+  assert.deepEqual(
+    await resolveInferenceBackends({ gpu: { requestAdapter: async () => null } }, { webgpu: {} }),
+    ["wasm"],
+  );
+});
+
+test("fixed-window features blend while pitch and unvoiced decisions remain intact", () => {
+  const previousFeatures = {
+    hiddenStates: Float32Array.from({ length: 16 }, (_, index) => index),
+    upsampledFrameCount: 8,
+    featureSize: 2,
+  };
+  const currentFeatures = {
+    hiddenStates: new Float32Array(16).fill(100),
+    upsampledFrameCount: 8,
+    featureSize: 2,
+  };
+  const previousPitch = { f0: Float32Array.from([100, 100, 100, 100, 100, 200, 210, 220]), frameCount: 8 };
+  const currentPitch = { f0: Float32Array.from([0, 0, 230, 240, 250, 260, 270, 280]), frameCount: 8 };
+
+  const stabilized = stabilizeAnalysisBoundary(
+    currentFeatures,
+    currentPitch,
+    previousFeatures,
+    previousPitch,
+    5,
+    3,
+  );
+
+  assert.notEqual(stabilized.features.hiddenStates, currentFeatures.hiddenStates);
+  assert.ok(stabilized.features.hiddenStates[0] > previousFeatures.hiddenStates[10]);
+  assert.ok(stabilized.features.hiddenStates[0] < 100);
+  assert.equal(stabilized.features.hiddenStates[6], 100);
+  assert.deepEqual(Array.from(stabilized.pitch.f0.slice(0, 4)), [0, 0, 230, 240]);
+  assert.equal(stabilized.pitch.f0[4], 250);
+  assert.deepEqual(Array.from(currentPitch.f0.slice(0, 4)), [0, 0, 230, 240]);
+});
+
+test("absolute timeline resolves octave disagreements once and slices identical overlap", async () => {
+  const resolve = Function('processAudioInFixedFrameWindows',
+    `return (${extractFunction('resolvePitchTimeline')});`)(processFixedWindows);
+  const slice = Function(`return (${extractFunction('slicePitchTimeline')});`)();
+  let window = 0;
+  const timeline = await resolve(new Float32Array(48000), {
+    frameCount:100, inputSampleRate:16000, outputSampleRate:40000,
+    contextDuration:.15,crossfadeDuration:.05,lookAheadDuration:.04,
+  }, async () => ({ f0: new Float32Array(104).fill(window++ % 2 ? 440 : 220) }));
+  assert.ok(timeline.disagreements.length > 0);
+  assert.ok([...timeline.f0].every(hz=>hz===220||hz===440));
+  const first = slice(timeline, 0, 100);
+  const second = slice(timeline, 65*160, 100);
+  assert.deepEqual([...first.f0.slice(65)], [...second.f0.slice(0,35)]);
+});
+
+test("fixed-window pitch continuity does not turn a genuine pause into a held note", () => {
+  const features = {
+    hiddenStates: new Float32Array(8),
+    upsampledFrameCount: 4,
+    featureSize: 2,
+  };
+  const previousPitch = { f0: Float32Array.from([180, 180, 180, 180]), frameCount: 4 };
+  const currentPitch = { f0: new Float32Array(4), frameCount: 4 };
+  const stabilized = stabilizeAnalysisBoundary(
+    features,
+    currentPitch,
+    features,
+    previousPitch,
+    2,
+    2,
+  );
+  assert.deepEqual(Array.from(stabilized.pitch.f0), [0, 0, 0, 0]);
+});
+
+test("local harsh-burst guard leaves normal audio untouched and suppresses a detected burst", () => {
+  const sampleRate = 40_000;
+  const normal = Float32Array.from(
+    { length: sampleRate },
+    (_, index) => 0.2 * Math.sin(2 * Math.PI * 1000 * index / sampleRate),
+  );
+  assert.equal(suppressHarshBursts(normal, sampleRate), normal);
+
+  const harsh = new Float32Array(normal);
+  for (let index = 19_000; index < 19_500; index++) harsh[index] = index % 2 ? 0.8 : -0.8;
+  const repaired = suppressHarshBursts(harsh, sampleRate);
+  const maximumJump = (samples) => {
+    let maximum = 0;
+    for (let index = 1; index < samples.length; index++) {
+      maximum = Math.max(maximum, Math.abs(samples[index] - samples[index - 1]));
+    }
+    return maximum;
+  };
+  assert.ok(maximumJump(repaired) < maximumJump(harsh) * 0.8);
+});

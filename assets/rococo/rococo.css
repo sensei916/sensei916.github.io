@@ -1,0 +1,412 @@
+/* ==========================================================================
+   PostPrep · Rococo — Apple-skeleton edition (2026-11-07)
+   A maison's website on Apple's skeleton: neutral canvas, one navy accent,
+   a gold hairline used only as a line, a serif display for h1 + section titles.
+   Every rule is scoped under html[data-ui="rococo"]. No images, no loops.
+   ========================================================================== */
+
+/* ---------- display faces (OFL, local; see fonts/LICENSE-OFL.txt) ---------- */
+@font-face { font-family: "RC Playfair"; src: url(fonts/PlayfairDisplay.woff2) format("woff2"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "RC Serif SC"; src: url(fonts/NotoSerifSC-700.woff2) format("woff2"); font-weight: 500 900; font-display: swap; }
+
+/* ---------- tokens · day ---------- */
+html[data-ui="rococo"].v3s.v3s {
+  --ap-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --ap-display: "RC Playfair", "RC Serif SC", "Songti SC", "STSong", "Noto Serif SC", serif;
+  --ap-bg: #f5f5f7; --ap-bg-2: #ffffff;
+  --ap-ink: #1d1d1f; --ap-ink-2: #6e6e73; --ap-ink-3: #86868b;
+  --ap-hair: rgb(0 0 0 / .08);
+  --ap-nav: rgb(251 251 253 / .8); --ap-nav-solid: rgb(251 251 253 / .97);
+  --ap-accent: #2a4a8a; --ap-accent-ink: #ffffff;
+  --ap-radius: 18px; --ap-float: 0 4px 24px rgb(0 0 0 / .08);
+  --ap-ease: cubic-bezier(.28, .11, .32, 1);
+  --rc-gold: #b08d57;                       /* used only as a line */
+  --rc-navy: #1c2f57;                       /* the studio console */
+  --rc-paper-rgb: 251 251 253;              /* the solid phone nav (freeze2) */
+  /* v3 tokens re-pointed so everything v3 paints follows the neutral system */
+  --v3-bg: var(--ap-bg); --v3-bg-rgb: 245 245 247;
+  --v3-paper: var(--ap-bg-2); --v3-paper-rgb: 255 255 255;
+  --v3-well: var(--ap-bg);
+  --v3-ink: var(--ap-ink); --v3-ink-rgb: 29 29 31;
+  --v3-ink-2: var(--ap-ink-2); --v3-ink-3: var(--ap-ink-3);
+  --v3-line: var(--ap-hair); --v3-line-2: rgb(0 0 0 / .14);
+  --v3-accent: #2a4a8a; --v3-accent-rgb: 42 74 138; --v3-accent-ink: #2a4a8a;
+  --v3-on-accent: #ffffff;
+  --v3-ok: #248a3d; --v3-ok-rgb: 36 138 61; --v3-ok-ink: #1e7a35;
+  --v3-warn: #b25000; --v3-warn-rgb: 178 80 0; --v3-warn-ink: #9a4500;
+  --v3-bad: #d70015; --v3-bad-rgb: 215 0 21; --v3-bad-ink: #c00013;
+  --v3-radius: 18px; --v3-radius-sm: 12px;
+  --v3-font: var(--ap-font); --v3-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --g-tint: var(--ap-bg-2); --g-blur: none; --g-edge: none; --g-drop: none;
+  --v3-shadow: none; --card-drop: none; --card-lift: none; --drop-deep: var(--ap-float);
+  --m-orange: #2a4a8a; --m-indigo: #2a4a8a; --m-slate: #2a4a8a; --m-ochre: #2a4a8a;
+  --m-green: #2a4a8a; --m-brick: #2a4a8a; --m-plum: #2a4a8a; --m-graphite: #2a4a8a;
+  color-scheme: light;
+  background: var(--ap-bg) !important;
+  scroll-padding-top: 64px;
+}
+/* the sky stays, calm and static: the time of day only nudges the paper a shade */
+html[data-ui="rococo"].v3s.v3s[data-rc-sky="morning"] { --ap-bg: #f6f5f4; }
+html[data-ui="rococo"].v3s.v3s[data-rc-sky="dusk"] { --ap-bg: #f4f4f7; }
+
+/* ---------- tokens · night ---------- */
+html[data-ui="rococo"][data-rc-night].v3s.v3s {
+  --ap-bg: #000000; --ap-bg-2: #1d1d1f;
+  --ap-ink: #f5f5f7; --ap-ink-2: #a1a1a6; --ap-ink-3: #86868b;
+  --ap-hair: rgb(255 255 255 / .12);
+  --ap-nav: rgb(22 22 23 / .8); --ap-nav-solid: rgb(22 22 23 / .97);
+  --ap-accent: #3a5ea8; --ap-float: 0 4px 24px rgb(0 0 0 / .5);
+  --rc-navy: #141f3a;
+  --rc-paper-rgb: 22 22 23;
+  --v3-bg-rgb: 0 0 0; --v3-paper-rgb: 29 29 31; --v3-ink-rgb: 245 245 247;
+  --v3-line-2: rgb(255 255 255 / .2);
+  --v3-accent: #3a5ea8; --v3-accent-rgb: 58 94 168; --v3-accent-ink: #9fb6ea;
+  --v3-ok: #30d158; --v3-ok-rgb: 48 209 88; --v3-ok-ink: #30d158;
+  --v3-warn: #ff9f0a; --v3-warn-rgb: 255 159 10; --v3-warn-ink: #ff9f0a;
+  --v3-bad: #ff453a; --v3-bad-rgb: 255 69 58; --v3-bad-ink: #ff6961;
+  --m-orange: #3a5ea8; --m-indigo: #3a5ea8; --m-slate: #3a5ea8; --m-ochre: #3a5ea8;
+  --m-green: #3a5ea8; --m-brick: #3a5ea8; --m-plum: #3a5ea8; --m-graphite: #3a5ea8;
+  color-scheme: dark;
+}
+html[data-ui="rococo"].v3s.v3s { scrollbar-color: auto; }
+
+/* Apple skeleton (generated from apple/rgc/skeleton.css, @S -> html[data-ui="rococo"].v3s.v3s). Do not hand-edit; overrides live in 06-identity.css. */
+/* ---------- canvas + type ---------- */
+html[data-ui="rococo"].v3s.v3s body { font-family: var(--ap-font) !important; background: var(--ap-bg) !important; color: var(--ap-ink); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
+html[data-ui="rococo"].v3s.v3s ::selection { background: rgb(var(--v3-accent-rgb) / .2); color: inherit; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-display, .v3-h2, .v3-h3, h1, h2, h3) { font-family: var(--ap-display, var(--ap-font)); color: var(--ap-ink); text-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-display, .h-hero .v3-display, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child h1, body:not([data-page="home"]):not([data-page="404"]) main h1:first-of-type) {
+  font-size: 56px !important; line-height: 1.07 !important; font-weight: 700 !important; letter-spacing: -.005em !important; }
+html[data-ui="rococo"].v3s.v3s .h-hero .v3-display > span { color: var(--ap-ink) !important; font-weight: 700 !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-h2, :is(.h-flow-head, .h-tools-head, .h-studio-head) .v3-h2) { font-size: 40px !important; line-height: 1.1 !important; font-weight: 700 !important; letter-spacing: -.003em !important; }
+html[data-ui="rococo"].v3s.v3s[lang^="zh"] :is(.v3-display, .v3-h2, main h1) { letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-lead, .h-hero .v3-lead, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child > p:last-child) {
+  font-size: 21px !important; line-height: 1.38 !important; font-weight: 400 !important; letter-spacing: .011em; color: var(--ap-ink-2) !important; }
+html[data-ui="rococo"].v3s.v3s .v3-body { font-size: 17px; line-height: 1.47; }
+/* the one eyebrow above a headline: plain, sentence case, secondary ink */
+html[data-ui="rococo"].v3s.v3s :is(.v3-eyebrow, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child > p:first-child) {
+  font-size: 14px !important; line-height: 1.3 !important; font-weight: 600 !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--ap-ink-2) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-eyebrow, .h-studio-head)::before { display: none !important; }
+html[data-ui="rococo"].v3s.v3s main [class*="uppercase"][class*="tracking"] { text-transform: none !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s :is(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--v3-accent) !important; outline-offset: 2px !important; }
+
+/* ---------- nav: one 44 px translucent bar, full width ---------- */
+html[data-ui="rococo"].v3s.v3s #site-header { padding: 0 !important; margin: 0 !important; top: 0 !important; min-height: 44px !important; }
+html[data-ui="rococo"].v3s.v3s #site-header > header {
+  max-width: none !important; margin: 0 !important; border: 0 !important; border-radius: 0 !important;
+  background: var(--ap-nav) !important; box-shadow: 0 1px 0 var(--ap-hair) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(20px) !important; backdrop-filter: saturate(180%) blur(20px) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header > header::before, html[data-ui="rococo"].v3s.v3s #site-header > header::after { display: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-header > header > div { min-height: 44px !important; max-width: 1200px !important; margin: 0 auto !important; padding-block: 0 !important; padding-inline: 22px !important; gap: 8px !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a { gap: 8px !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:first-child { width: 24px !important; height: 24px !important; border-radius: 7px !important; box-shadow: none !important; transform: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:first-child :is(i, svg) { font-size: 11px !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:first-child::before { font-size: 13px !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:last-child > span:first-child { font: 600 15px/1.2 var(--ap-font) !important; letter-spacing: -.01em !important; color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:last-child > span:last-child { display: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-header nav[aria-label="Primary navigation"] { gap: 0 !important; }
+html[data-ui="rococo"].v3s.v3s #site-header nav[aria-label="Primary navigation"] a { height: 44px; display: inline-flex !important; align-items: center; padding: 0 10px !important; border: 0 !important; border-radius: 0 !important; background: none !important;
+  font: 400 12px/1 var(--ap-font) !important; letter-spacing: -.01em !important; color: rgb(var(--v3-ink-rgb) / .8) !important; box-shadow: none !important; transition: color .24s var(--ap-ease) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header nav[aria-label="Primary navigation"] a:hover, html[data-ui="rococo"].v3s.v3s #site-header nav[aria-label="Primary navigation"] a[aria-current] { color: var(--ap-ink) !important; background: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-header nav[aria-label="Primary navigation"] a[aria-current] { font-weight: 600 !important; }
+html[data-ui="rococo"].v3s.v3s #site-header nav a::before, html[data-ui="rococo"].v3s.v3s #site-header nav a::after, html[data-ui="rococo"].v3s.v3s #site-header nav .v3-pill { display: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-header :is(button, .style-toggle) { min-height: 32px !important; min-width: 32px !important; height: 32px !important; padding-inline: 8px !important; border-radius: 8px !important; background: none !important; box-shadow: none !important; border: 0 !important; color: rgb(var(--v3-ink-rgb) / .8) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header :is(button, .style-toggle):hover { background: rgb(var(--v3-ink-rgb) / .06) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header :is(button, .style-toggle) i { font-size: 13px !important; color: rgb(var(--v3-ink-rgb) / .8) !important; }
+html[data-ui="rococo"].v3s.v3s #site-header [data-language-toggle] span { font: 400 12px/1 var(--ap-font) !important; }
+html[data-ui="rococo"].v3s.v3s #mobile-navigation { background: var(--ap-bg-2) !important; border: 0 !important; border-top: 1px solid var(--ap-hair) !important; border-radius: 0 !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s #mobile-navigation a { font: 400 17px/1.3 var(--ap-font) !important; color: var(--ap-ink) !important; background: none !important; border-radius: 0 !important; border-bottom: 1px solid var(--ap-hair); padding: 12px 6px !important; }
+html[data-ui="rococo"].v3s.v3s #mobile-navigation a[aria-current] { font-weight: 600 !important; }
+
+/* ---------- buttons: pills, flat, one accent ---------- */
+html[data-ui="rococo"].v3s.v3s :is(.v3-btn-primary, :is(button, a):is([class*="bg-brand"]:not([class*="bg-brandSoft"])):not([role="tab"]):not([aria-pressed="true"]):not([data-model-id])) {
+  border-radius: 980px !important; background: var(--v3-accent) !important; background-image: none !important; color: var(--ap-accent-ink, #fff) !important; box-shadow: none !important; border: 0 !important;
+  font-weight: 400 !important; font-size: 17px !important; letter-spacing: -.01em !important; padding: 12px 22px !important; min-height: 44px; transform: none !important;
+  transition: background-color .24s var(--ap-ease), opacity .24s var(--ap-ease) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-btn-primary, :is(button, a)[class*="bg-brand"]:not([class*="bg-brandSoft"])) :is(i, span) { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-btn-primary, :is(button, a)[class*="bg-brand"]:not([class*="bg-brandSoft"])):not([disabled]):hover { background: color-mix(in srgb, var(--v3-accent) 92%, #fff) !important; }
+html[data-ui="rococo"].v3s.v3s .v3-btn-line { border-radius: 980px !important; box-shadow: none !important; background: transparent !important; color: var(--v3-accent) !important; border: 1px solid var(--v3-accent) !important; }
+html[data-ui="rococo"].v3s.v3s .v3-btn-plain { color: var(--v3-accent-ink) !important; font-size: 17px; }
+html[data-ui="rococo"].v3s.v3s .v3-btn-plain:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------- surfaces: flat 18 px cards, separated by background ---------- */
+html[data-ui="rococo"].v3s.v3s .h-amb, html[data-ui="rococo"].v3s.v3s body:not([data-page="home"]):not([data-page="404"]) main::before, html[data-ui="rococo"].v3s.v3s .v3-404::before, html[data-ui="rococo"].v3s.v3s .h-floor, html[data-ui="rococo"].v3s.v3s .h-obj::after { display: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-obj { transform: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-ruler { display: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(.h-obj .h-device, .h-device) { border-radius: 28px !important; box-shadow: 0 30px 60px -30px rgb(0 0 0 / .18), 0 0 0 1px var(--ap-hair) !important; background: var(--ap-bg-2) !important; }
+html[data-ui="rococo"].v3s.v3s body:not([data-page="home"]) main :is(section, aside, article, details):is(.bg-surface, .bg-white, .rounded-2xl, .rounded-xl):is(.border, [class*="shadow"]):not([data-model-id]):not(.rvc-notice) {
+  border-radius: var(--ap-radius) !important; box-shadow: none !important; border-color: transparent !important; background-color: var(--ap-bg-2) !important; background-image: none !important; }
+html[data-ui="rococo"].v3s.v3s body:not([data-page="home"]) main :is(section, aside, article) :is(div, p, section, details, label):is(.border):is(.rounded-lg, .rounded-xl, .rounded-2xl):not([data-model-id]):not(input):not(textarea):not(select) {
+  border-color: transparent !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool { border-radius: var(--ap-radius) !important; box-shadow: none !important; background: var(--ap-bg-2) !important; transition: opacity .24s var(--ap-ease) !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool::before, html[data-ui="rococo"].v3s.v3s a.h-tool::after { display: none !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool:hover { transform: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-privacy .h-wrap { background: var(--ap-bg-2) !important; box-shadow: none !important; border-radius: var(--ap-radius) !important; }
+html[data-ui="rococo"].v3s.v3s .h-verb b { color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page] main > header:first-child::before { box-shadow: none !important; background: var(--m, var(--v3-accent)) !important; border-radius: 14px !important; }
+
+/* ---------- inputs: 12 px, filled, no border, accent ring ---------- */
+html[data-ui="rococo"].v3s.v3s main :is(input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(.sr-only), textarea, select) {
+  border-radius: 12px !important; border-color: transparent !important; background-color: var(--ap-bg) !important; box-shadow: none !important; color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s main :is(input, textarea, select):focus-visible { outline: 0 !important; box-shadow: 0 0 0 1px var(--v3-accent), 0 0 0 4px rgb(var(--v3-accent-rgb) / .16) !important; }
+html[data-ui="rococo"].v3s.v3s main :is(input, textarea)::placeholder { color: var(--ap-ink-3) !important; }
+
+/* ---------- studio: keep the device, drop the HUD labels ---------- */
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-kicker { display: none !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio :is(.v3-scope-labels, .v3-readouts dt) { font-family: var(--ap-font) !important; letter-spacing: 0 !important; text-transform: none !important; }
+
+/* ---------- motion: one-shot reveals, Apple easing, no loops ---------- */
+html[data-ui="rococo"].v3s.v3s [data-reveal] { transition-timing-function: var(--ap-ease) !important; transition-duration: .8s !important; }
+html[data-ui="rococo"].v3s.v3s .h-mirror .m-caret { animation: none !important; }
+html[data-ui="rococo"].v3s.v3s .v3-studio-state[data-state="running"] i { animation: none !important; }
+@media (prefers-reduced-motion: reduce) { html[data-ui="rococo"].v3s.v3s [data-reveal] { transition: opacity .2s linear !important; transform: none !important; } }
+
+/* ---------- tablet / phone scale ---------- */
+@media (max-width: 1068px) {
+  html[data-ui="rococo"].v3s.v3s :is(.v3-display, .h-hero .v3-display, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child h1, body:not([data-page="home"]):not([data-page="404"]) main h1:first-of-type) { font-size: 48px !important; }
+  html[data-ui="rococo"].v3s.v3s :is(.v3-h2, :is(.h-flow-head, .h-tools-head, .h-studio-head) .v3-h2) { font-size: 32px !important; }
+  html[data-ui="rococo"].v3s.v3s :is(.v3-lead, .h-hero .v3-lead, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child > p:last-child) { font-size: 19px !important; }
+}
+@media (max-width: 1023px) { html[data-ui="rococo"].v3s.v3s #site-header > header > div { min-height: 48px !important; padding-inline: 16px !important; } }
+@media (max-width: 734px) {
+  html[data-ui="rococo"].v3s.v3s :is(.v3-display, .h-hero .v3-display, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child h1, body:not([data-page="home"]):not([data-page="404"]) main h1:first-of-type) { font-size: 40px !important; line-height: 1.1 !important; }
+  html[data-ui="rococo"].v3s.v3s :is(.v3-h2, :is(.h-flow-head, .h-tools-head, .h-studio-head) .v3-h2) { font-size: 28px !important; }
+  html[data-ui="rococo"].v3s.v3s :is(.v3-eyebrow, body:not([data-page="home"]):not([data-page="404"]) main > header:first-child > p:first-child) { font-size: 12px !important; }
+  html[data-ui="rococo"].v3s.v3s main :is(input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, select) { font-size: 16px !important; }
+}
+/* phones: no blur on the nav (freeze2 budget) */
+@media (max-width: 900px), (hover: none) and (pointer: coarse) {
+  html[data-ui="rococo"].v3s.v3s #site-header > header, html[data-ui="rococo"].v3s.v3s #site-header > header * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  html[data-ui="rococo"].v3s.v3s #site-header > header { background: var(--ap-nav-solid) !important; }
+}
+
+/* ==========================================================================
+   Rococo identity on the Apple skeleton — the only ornament allowed:
+   · serif display (Playfair / Noto Serif SC) for the page h1 and section titles
+   · one gold hairline (#b08d57) under section titles, and a gold corner flourish
+     on the hero device and the studio
+   · a navy studio console with a single gold hairline
+   ========================================================================== */
+html[data-ui="rococo"].v3s.v3s { --rc-curl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40' fill='none' stroke='%23b08d57' stroke-linecap='round'%3E%3Cpath d='M1 39V14C1 6.8 6.8 1 14 1h25' stroke-width='.9' opacity='.85'/%3E%3Cpath d='M9 9c4.5-1.6 8.4.9 7.6 4.4-.6 2.7-4.4 2.9-5.1.7-.4-1.4.7-2.3 1.9-1.7' stroke-width='.9'/%3E%3C/svg%3E"); --rc-corner: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none' stroke='%23b08d57' stroke-linecap='round'%3E%3Cpath d='M.5 63.5V20C.5 9.2 9.2.5 20 .5h43.5' stroke-width='1'/%3E%3Cpath d='M8.5 26V22.5c0-7.7 6.3-14 14-14H26' stroke-width='.7' opacity='.6'/%3E%3Cpath d='M15 15c4.5-1.6 8.4.9 7.6 4.4-.6 2.7-4.4 2.9-5.1.7-.4-1.4.7-2.3 1.9-1.7' stroke-width='.8'/%3E%3C/svg%3E"); }
+
+/* type: serif only for the h1 and section titles; everything else is the system face */
+html[data-ui="rococo"].v3s.v3s :is(h3, h4, .v3-h3, .v3-studio-title, .h-verb, .h-verb b) { font-family: var(--ap-font) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.v3-display, .v3-h2, main h1, main h2) { font-family: var(--ap-display) !important; font-weight: 700 !important; }
+html[data-ui="rococo"].v3s.v3s body :is(p, li, dd, dt, label, summary, td, th, small, span, input, textarea, select, button, a, output, b, strong, em, mark) { font-style: normal; }
+html[data-ui="rococo"].v3s.v3s body :is(code, pre, kbd, samp, .font-mono, .v3-num, .tabular-nums) { font-family: ui-monospace, "SF Mono", Menlo, monospace !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s main :is(.uppercase) { text-transform: none !important; letter-spacing: 0 !important; }
+
+/* the gold rule: a 40 px hairline under each section title */
+html[data-ui="rococo"].v3s.v3s :is(.v3-h2, main section > h2:first-child)::after { content: ""; display: block; width: 40px; height: 1px; margin: 20px 0 0; background: var(--rc-gold); }
+html[data-ui="rococo"].v3s.v3s :is(.h-flow-head, .h-tools-head, .h-studio-head) .v3-h2::after { margin-inline: inherit; }
+html[data-ui="rococo"].v3s.v3s [style*="text-align: center"] .v3-h2::after, html[data-ui="rococo"].v3s.v3s .text-center .v3-h2::after, html[data-ui="rococo"].v3s.v3s .text-center > h2::after { margin-inline: auto; }
+
+/* ---------- home hero: the device alone, with the gold flourish on two corners ---------- */
+html[data-ui="rococo"].v3s.v3s .h-stage .h-obj { background: none !important; padding: 0 !important; box-shadow: none !important; border-radius: 28px !important; transform: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::before, html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::after {
+  content: "" !important; display: block !important; position: absolute; z-index: 0; width: 56px; height: 56px; padding: 0 !important; border-radius: 0 !important;
+  background: var(--rc-corner) 0 0 / 100% 100% no-repeat !important; -webkit-mask: none !important; mask: none !important; pointer-events: none; opacity: 1 !important; }
+html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::before { left: -14px; top: -14px; }
+html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::after { right: -14px; bottom: -14px; left: auto; top: auto; inset: auto -14px -14px auto; transform: rotate(180deg); }
+html[data-ui="rococo"].v3s.v3s .h-stage .h-obj > * { position: relative; z-index: 1; }
+html[data-ui="rococo"].v3s.v3s .h-device { border-radius: 28px !important; }
+html[data-ui="rococo"].v3s.v3s .h-device :is(.h-bar) { background: transparent !important; box-shadow: inset 0 -1px 0 var(--ap-hair) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-device mark, html[data-ui="rococo"].v3s.v3s .h-screen mark { background: rgb(var(--v3-bad-rgb) / .12) !important; color: var(--v3-bad-ink) !important; text-decoration: none !important; border-radius: 3px; }
+html[data-ui="rococo"].v3s.v3s .h-verb b { color: var(--ap-ink) !important; -webkit-text-stroke: 0 !important; }
+html[data-ui="rococo"].v3s.v3s .h-pass-stamp { color: var(--v3-accent-ink) !important; border-color: currentColor !important; }
+
+/* ---------- studio: navy console, one gold hairline, the flourish on two corners ---------- */
+html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack) {
+  --m-bg: var(--rc-navy); --m-well: rgb(0 0 0 / .22); --m-ink: #f5f5f7; --m-ink-2: #b9c2d6; --m-ink-3: #8e99b3; --m-line: rgb(255 255 255 / .1); --m-accent: #d9c39a;
+  --ra: #d9c39a; --rb: #9fb6ea; --la: #d9c39a; --lb: #9fb6ea;
+  position: relative; isolation: isolate;
+  background: var(--rc-navy) !important; background-image: none !important;
+  border: 0 !important; border-radius: 28px !important;
+  box-shadow: 0 30px 60px -36px rgb(10 20 45 / .55) !important; }
+html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack)::before {
+  content: ""; position: absolute; inset: 9px; z-index: 0; pointer-events: none; border-radius: 20px;
+  box-shadow: inset 0 0 0 1px rgb(176 141 87 / .55); }
+html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack)::after {
+  content: "" !important; display: block !important; position: absolute !important; z-index: 0; pointer-events: none;
+  inset: 15px auto auto 15px !important; width: 34px !important; height: 34px !important; margin: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important;
+  background: var(--rc-curl) 0 0 / 100% 100% no-repeat !important; box-shadow: none !important; opacity: 1 !important; transform: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack) > * { position: relative; z-index: 1; }
+html[data-ui="rococo"].v3s.v3s .h-rack .h-rack-tc { color: #d9c39a !important; background: rgb(0 0 0 / .28) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s .h-rack .h-rack-led { background: #d9c39a !important; box-shadow: none !important; }
+
+@media (max-width: 734px) {
+  html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::before, html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::after { width: 40px; height: 40px; }
+  html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::before { left: -8px; top: -8px; }
+  html[data-ui="rococo"].v3s.v3s .h-stage .h-obj::after { inset: auto -8px -8px auto; }
+  html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack)::before { inset: 6px; border-radius: 16px; }
+  html[data-ui="rococo"].v3s.v3s :is(#v3-studio, .h-rack)::after { inset: 11px auto auto 11px !important; width: 28px !important; height: 28px !important; }
+}
+
+/* hero device details: flat segmented thumb, no glossy scan sweep */
+html[data-ui="rococo"].v3s.v3s .v3-seg > .v3-pill { --pill: #ffffff; background: none !important; box-shadow: none !important; filter: drop-shadow(0 1px 3px rgb(0 0 0 / .12)) !important; }
+html[data-ui="rococo"].v3s.v3s .v3-seg > .v3-pill > i { background: var(--pill) !important; box-shadow: none !important; }
+html[data-ui="rococo"][data-rc-night].v3s.v3s .v3-seg > .v3-pill { --pill: #3a3a3c; filter: none !important; }
+html[data-ui="rococo"][data-rc-night].v3s.v3s .v3-seg.is-held > .v3-pill { --pill: #48484c; }
+html[data-ui="rococo"].v3s.v3s .h-device .h-scan { display: none !important; }
+
+/* the voice-studio tool card speaks the console's language: navy, light type */
+html[data-ui="rococo"].v3s.v3s a.h-tool.c-rvc { background: var(--rc-navy) !important; color: #f5f5f7 !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool.c-rvc > b { color: #f5f5f7 !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool.c-rvc .h-tool-d { color: #b9c2d6 !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool.c-rvc :is(.h-tool-no, .h-tool-go) { color: #8e99b3 !important; }
+html[data-ui="rococo"].v3s.v3s a.h-tool.c-rvc .h-tool-ic { background: rgb(255 255 255 / .12) !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio { padding: clamp(20px, 2.6vw, 30px) !important; }
+@media (max-width: 734px) { html[data-ui="rococo"].v3s.v3s .h-tools-head { margin-bottom: 24px !important; } }
+
+/* no all-caps pseudo-tech eyebrows (copy comes from i18n; hide/neutralise like glass) */
+html[data-ui="rococo"].v3s.v3s main p[class*="uppercase"][class*="tracking-[0.18em]"], html[data-ui="rococo"].v3s.v3s [data-rvc-i18n="workflowEyebrow"], html[data-ui="rococo"].v3s.v3s #v3-studio .v3-kicker { display: none !important; }
+html[data-ui="rococo"].v3s.v3s main [class*="uppercase"][class*="tracking"] { text-transform: none !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s body:not([data-page="home"]):not([data-page="404"]) main > header:first-child > p:first-child { display: none !important; }
+
+/* ==========================================================================
+   Neutral components the skeleton leaves to the theme: tailwind surfaces and
+   text colours (day + night), selected states, ranges, progress, toast, footer.
+   Flat, one accent, hairlines only.
+   ========================================================================== */
+/* text */
+html[data-ui="rococo"].v3s.v3s :is(.text-ink, .text-zinc-900, .text-zinc-800, .text-zinc-700, .text-slate-900, .text-slate-800, .text-gray-900) { color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.text-muted, .text-zinc-600, .text-zinc-500, .text-slate-600, .text-slate-500, .text-gray-500, .text-gray-600) { color: var(--ap-ink-2) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.text-zinc-400, .text-slate-400, .text-gray-400) { color: var(--ap-ink-3) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.text-brand, .text-teal-700, .text-teal-800, .text-teal-600, .text-emerald-700, .text-violet-700, .text-violet-800, .text-sky-700) { color: var(--v3-accent-ink) !important; }
+html[data-ui="rococo"].v3s.v3s a:not([class]) { color: var(--v3-accent-ink); text-decoration: none; }
+html[data-ui="rococo"].v3s.v3s a:not([class]):hover { text-decoration: underline; text-underline-offset: 3px; }
+html[data-ui="rococo"].v3s.v3s hr { border-color: var(--ap-hair) !important; }
+html[data-ui="rococo"].v3s.v3s :is(.border-line, .border-zinc-200, .border-zinc-100, .border-slate-200, .border-gray-200) { border-color: var(--ap-hair) !important; }
+
+/* surfaces: cards white (night #1d1d1f), wells the page grey (night black) */
+html[data-ui="rococo"].v3s.v3s main :is(.bg-white, .bg-surface):not(button):not(input):not(select):not(textarea):not([data-model-id]):not([role="tab"]) { background-color: var(--ap-bg-2) !important; }
+html[data-ui="rococo"].v3s.v3s main :is(.bg-canvas, .bg-zinc-50, .bg-zinc-100, .bg-slate-50, .bg-gray-50, .bg-teal-50, .bg-violet-50, .bg-sky-50, .bg-brandSoft, [class*="bg-teal-50/"], [class*="bg-violet-50/"], [class*="bg-white/"]):not(button):not([role="tab"]):not([role="radio"]):not([data-model-id]):not(.rvc-notice) {
+  background-color: var(--ap-bg) !important; border-color: transparent !important; }
+html[data-ui="rococo"].v3s.v3s main :is(.bg-amber-50, .bg-rose-50, .bg-emerald-50, .bg-red-50, .bg-yellow-50, .bg-green-50) { background-color: var(--ap-bg) !important; border-color: transparent !important; }
+html[data-ui="rococo"].v3s.v3s main :is(section, aside, article, div, details, fieldset):is(.rounded-lg, .rounded-xl, .rounded-2xl):is(.border, [class*="shadow"]):not([data-model-id]):not(.rvc-notice) {
+  box-shadow: none !important; border-color: transparent !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background-image: none !important; }
+html[data-ui="rococo"].v3s.v3s .v3-paper { background: var(--ap-bg-2) !important; box-shadow: none !important; }
+
+/* secondary buttons: grey pill (on white) */
+html[data-ui="rococo"].v3s.v3s main :is(button, a.inline-flex):is([class*="border-line"], [class*="border-brand"], [class*="bg-white"], [class*="border-violet"], [class*="bg-teal-50"], [class*="bg-brandSoft"]):not([class*="bg-brand "]):not([data-model-id]):not([role="option"]):not([aria-pressed="true"]):not([aria-checked="true"]):not([aria-selected="true"]),
+html[data-ui="rococo"].v3s.v3s .v3-btn-line {
+  background: var(--ap-bg) !important; color: var(--ap-ink) !important; border: 0 !important; border-radius: 980px !important; box-shadow: none !important;
+  font-weight: 400 !important; letter-spacing: 0 !important; transition: background-color .24s var(--ap-ease) !important; }
+html[data-ui="rococo"].v3s.v3s main :is(button, a.inline-flex):is([class*="border-line"], [class*="bg-white"], [class*="bg-teal-50"]):not([data-model-id]):hover { background: color-mix(in srgb, var(--ap-bg) 88%, var(--ap-ink)) !important; }
+html[data-ui="rococo"].v3s.v3s main :is(button, a.inline-flex) i { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s .v3-btn-plain { color: var(--v3-accent-ink) !important; font-weight: 400 !important; }
+html[data-ui="rococo"].v3s.v3s button[disabled] { opacity: .45 !important; cursor: not-allowed; }
+
+/* selected toggles: the accent, flat */
+html[data-ui="rococo"].v3s.v3s body main :is(button[aria-pressed="true"][aria-pressed="true"], [role="tab"][aria-selected="true"][aria-selected], [role="radio"][aria-checked="true"][aria-checked])[class]:not([data-model-id]) {
+  background: var(--v3-accent) !important; color: #fff !important; border-color: transparent !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s body main :is(button[aria-pressed="true"], [role="tab"][aria-selected="true"], [role="radio"][aria-checked="true"])[class]:not([data-model-id]) :is(i, span, b, strong, small) { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s .v3-seg { background: var(--ap-bg) !important; box-shadow: none !important; border-radius: 980px !important; }
+html[data-ui="rococo"].v3s.v3s .v3-seg-drop { background: var(--ap-bg-2) !important; box-shadow: 0 1px 4px rgb(0 0 0 / .12) !important; }
+html[data-ui="rococo"].v3s.v3s .v3-seg button { color: var(--ap-ink-2) !important; font-weight: 500 !important; }
+html[data-ui="rococo"].v3s.v3s .v3-seg button[aria-checked="true"] { color: var(--ap-ink) !important; background: transparent !important; }
+
+/* chips / tags are plain text labels now */
+html[data-ui="rococo"].v3s.v3s main :is(span, p, b):is(.rounded-full, .rounded, .rounded-md):is([class*="bg-"]):not(:has(> input)) { letter-spacing: 0 !important; text-transform: none !important; box-shadow: none !important; border-color: transparent !important; }
+
+/* folds */
+html[data-ui="rococo"].v3s.v3s main details > summary { color: var(--ap-ink) !important; font-weight: 600 !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s main details > summary::marker { color: var(--ap-ink-3); }
+
+/* ranges + checkboxes: native, accent */
+html[data-ui="rococo"].v3s.v3s main input[type="range"] { accent-color: var(--v3-accent); }
+html[data-ui="rococo"].v3s.v3s main input[type="checkbox"], html[data-ui="rococo"].v3s.v3s main input[type="radio"] { accent-color: var(--v3-accent); }
+html[data-ui="rococo"].v3s.v3s main input[type="file"]:not(.sr-only) { color: var(--ap-ink-2) !important; background: var(--ap-bg) !important; border: 0 !important; border-radius: 12px !important; }
+html[data-ui="rococo"].v3s.v3s main input[type="file"]::file-selector-button { font: 400 15px var(--ap-font); color: #fff; background: var(--v3-accent); border: 0; border-radius: 980px; padding: 8px 16px; margin-right: 12px; }
+
+/* progress: grey track, accent fill */
+html[data-ui="rococo"].v3s.v3s main :is(.h-2, .h-2\.5, .h-1\.5, .h-1):is(.rounded-full):is(.overflow-hidden) { background: var(--ap-bg) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s main :is(.h-2, .h-2\.5, .h-1\.5, .h-1):is(.rounded-full):is(.overflow-hidden) > div { background: var(--v3-accent) !important; }
+
+/* toast: dark slip, floating */
+html[data-ui="rococo"].v3s.v3s #toast { background: rgb(29 29 31 / .96) !important; color: #f5f5f7 !important; border: 0 !important; border-radius: 14px !important; box-shadow: var(--ap-float) !important; font-size: 15px !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"][data-rc-night].v3s.v3s #toast { background: rgb(245 245 247 / .96) !important; color: #1d1d1f !important; }
+
+/* tables */
+html[data-ui="rococo"].v3s.v3s main th { text-transform: none !important; letter-spacing: 0 !important; color: var(--ap-ink-2) !important; font-weight: 600 !important; }
+
+/* footer: hairline, small grey type */
+html[data-ui="rococo"].v3s.v3s #site-footer > footer { background: var(--ap-bg) !important; border-top: 1px solid var(--ap-hair) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s #site-footer > footer :is(div, p, span, a) { font-size: 12px; color: var(--ap-ink-2) !important; }
+html[data-ui="rococo"].v3s.v3s #site-footer > footer a:hover { color: var(--ap-ink) !important; }
+
+/* header logo tile: navy */
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:first-child { background: var(--v3-accent) !important; color: #fff !important; }
+html[data-ui="rococo"].v3s.v3s #site-header header > div > a > span:first-child :is(i, svg) { color: #fff !important; }
+
+/* ==========================================================================
+   RVC voice changer on the Apple skeleton: the navy console (06-identity) and
+   a flat workbench. Restyle only: ids, data-* hooks and DOM order are untouched.
+   ========================================================================== */
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] .rvc-page-heading h1 + span { font: 600 12px/1 var(--ap-font) !important; letter-spacing: 0 !important; text-transform: none !important; border-radius: 980px !important; background: var(--ap-bg-2) !important; box-shadow: none !important; color: var(--ap-ink-2) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] .rvc-notice { background: none !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important; border-color: transparent !important; }
+html[data-ui="rococo"].v3s.v3s .rvc-notice > summary { font: 400 14px/1.3 var(--ap-font) !important; letter-spacing: 0 !important; text-transform: none !important; color: var(--v3-accent-ink) !important; }
+
+/* ---------- console internals: flat wells on navy, gold-tinted signal ---------- */
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-studio-title { color: #f5f5f7 !important; font-weight: 600 !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-studio-voice { color: var(--m-ink-2) !important; font-style: normal !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-studio-state { background: rgb(255 255 255 / .08) !important; box-shadow: none !important; color: #f5f5f7 !important; border-radius: 980px !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio :is(.v3-scope-wave, .v3-scope-spec) { background: rgb(0 0 0 / .24) !important; box-shadow: none !important; border-radius: 14px !important; filter: none !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-scope-wave > canvas { filter: none !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-scope-empty { color: rgb(245 245 247 / .6) !important; font-style: normal !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-transport { background: rgb(255 255 255 / .08) !important; box-shadow: none !important; border-radius: 980px !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-chip { background: transparent !important; border: 0 !important; box-shadow: none !important; color: #f5f5f7 !important; border-radius: 980px !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-chip:not([disabled]):hover { background: rgb(255 255 255 / .1) !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-chip i { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-studio-side { background: rgb(0 0 0 / .2) !important; box-shadow: none !important; border-radius: 16px !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-readouts > div { background: rgb(255 255 255 / .05) !important; box-shadow: none !important; border-radius: 10px !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-readouts dt { color: var(--m-ink-3) !important; font-size: 12px !important; }
+html[data-ui="rococo"].v3s.v3s #v3-studio .v3-readouts dd { color: #f5f5f7 !important; }
+
+/* ---------- the workbench ---------- */
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] .rvc-workflow { border-radius: var(--ap-radius) !important; background: var(--ap-bg-2) !important; box-shadow: none !important; border: 0 !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] .rvc-workflow > .rvc-step-model { border-right: 0 !important; box-shadow: 1px 0 0 var(--ap-hair); }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] :is(#rvc-step-model-label, #rvc-step-audio-label) { font: 600 21px/1.2 var(--ap-font) !important; color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] :is(.studio-engine, .rvc-step-tune, .studio-mix-fold, .studio-fold:not(.studio-roster):not(.studio-content-notes)) { border: 0 !important; border-radius: 14px !important; background: var(--ap-bg) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-mode-badge { letter-spacing: 0 !important; text-transform: none !important; }
+
+/* voice cards: white tiles on the grey well; selected = one accent ring */
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] main [data-model-id][data-model-id] { background: var(--ap-bg) !important; border: 0 !important; border-radius: 14px !important; box-shadow: none !important; transition: box-shadow .24s var(--ap-ease) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] main [data-model-id][data-model-id]:hover { transform: none !important; box-shadow: inset 0 0 0 1px var(--ap-hair) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] main [data-model-id][data-model-id][aria-selected="true"] { background: var(--ap-bg-2) !important; box-shadow: inset 0 0 0 2px var(--v3-accent) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] main [data-model-id][data-model-id] > div > div > div:first-child { border: 0 !important; box-shadow: none !important; }
+
+/* collections, sources, modes: segmented look */
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] #rvc-collection-nav > button { border-radius: 980px !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] #rvc-collection-nav > button[aria-selected="true"] { background: var(--ap-ink) !important; color: var(--ap-bg-2) !important; border: 0 !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] #rvc-collection-nav > button[aria-selected="true"] span { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] #rvc-collection-nav > button[aria-selected="true"] span[class*="rounded"] { background: rgb(255 255 255 / .18) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] :is(#rvc-source-upload, #rvc-source-record, #rvc-source-tts) { border: 0 !important; border-radius: 14px !important; background: var(--ap-bg) !important; box-shadow: none !important; color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] :is(#rvc-source-upload, #rvc-source-record, #rvc-source-tts)[aria-pressed="true"] { background: var(--ap-bg-2) !important; box-shadow: inset 0 0 0 2px var(--v3-accent) !important; color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] :is(#rvc-source-upload, #rvc-source-record, #rvc-source-tts)[aria-pressed="true"] * { color: inherit !important; }
+html[data-ui="rococo"].v3s.v3s :is(#rvc-mode-official, #rvc-mode-local, #rvc-audio-mode-voice, #rvc-audio-mode-song) { background: var(--ap-bg-2) !important; color: var(--ap-ink) !important; border: 0 !important; border-radius: 12px !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(#rvc-mode-official, #rvc-mode-local, #rvc-audio-mode-voice, #rvc-audio-mode-song)[aria-checked="true"] { background: var(--ap-bg-2) !important; box-shadow: inset 0 0 0 2px var(--v3-accent) !important; }
+html[data-ui="rococo"].v3s.v3s :is(#rvc-mode-official, #rvc-mode-local, #rvc-audio-mode-voice, #rvc-audio-mode-song)[aria-checked="true"] * { color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-upload-wrap { border: 0 !important; border-radius: 14px !important; background: var(--ap-bg) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(#rvc-preset-male-female, #rvc-preset-same, #rvc-preset-female-male) { border-radius: 980px !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-pitch-value, html[data-ui="rococo"].v3s.v3s body[data-page="rvc"] output[id$="-value"] { background: transparent !important; color: var(--ap-ink) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s :is(#rvc-advanced, body[data-page="rvc"] .rvc-mix-track) { background: var(--ap-bg) !important; border: 0 !important; border-radius: 12px !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-chorus :is(label, label span, label strong, .chorus-toggle, .chorus-toggle *) { color: var(--ap-ink-2) !important; }
+
+/* conversion: the one large primary pill */
+html[data-ui="rococo"].v3s.v3s #rvc-service-status { background: var(--ap-bg) !important; border: 0 !important; box-shadow: none !important; border-radius: 12px !important; letter-spacing: 0 !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-convert { min-height: 56px !important; border-radius: 980px !important; background: var(--v3-accent) !important; color: #fff !important; font-size: 17px !important; font-weight: 500 !important; letter-spacing: 0 !important; box-shadow: none !important; -webkit-mask: none !important; mask: none !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-convert::before, html[data-ui="rococo"].v3s.v3s #rvc-convert::after { display: none !important; }
+
+/* training + result: flat cards */
+html[data-ui="rococo"].v3s.v3s #rvc-training-panel { border: 0 !important; border-radius: var(--ap-radius) !important; background: var(--ap-bg-2) !important; box-shadow: none !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-training-panel > summary { color: var(--ap-ink) !important; }
+html[data-ui="rococo"].v3s.v3s #rvc-result:not([hidden]) { border: 0 !important; border-radius: var(--ap-radius) !important; background: var(--ap-bg-2) !important; box-shadow: inset 0 0 0 1px var(--ap-hair) !important; }
+html[data-ui="rococo"][data-rc-night].v3s.v3s body[data-page="rvc"] audio { color-scheme: dark; }
+
+/* ---------- freeze2 · phone budget (touch / ≤900px): no looping decoration, no backdrop pass ---------- */
+@media (hover: none) and (pointer: coarse), (max-width: 900px) {
+  html[data-ui="rococo"].v3s.v3s .rc-st img, html[data-ui="rococo"].v3s.v3s #rvc-convert[aria-busy="true"]::before { animation: none !important; }
+  html[data-ui="rococo"].v3s.v3s #site-header > header, html[data-ui="rococo"].v3s.v3s #site-header > header * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  html[data-ui="rococo"].v3s.v3s #site-header > header { background-color: rgb(var(--rc-paper-rgb) / .97) !important; }
+}

@@ -1,0 +1,17 @@
+.DS_Store
+Thumbs.db
+node_modules/
+.env
+.env.*
+.dev.vars
+.wrangler/
+*.log
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*.onnx
+models/**/*.onnx
+tests/*.wav
+
+

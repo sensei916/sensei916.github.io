@@ -1,0 +1,271 @@
+"""Isolated, pinned singing-source separator; never use pitch-band splitting."""
+from __future__ import annotations
+import argparse
+import contextlib
+import hashlib
+import importlib.util
+import json
+import sys
+import types
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+import torch
+from scipy.signal import resample_poly
+try:
+    from app.chorus_quality import COUNT_POLICY_REVISION, pair_quality, accept_pair, merge_duplicate_leaves, source_agreement, reference_assignment, refine_local_leakage
+    from app.chorus_medley import candidate_available, load_candidate, prefer_candidate
+    from app.chorus_runtime import voice_range
+except ModuleNotFoundError:
+    from chorus_quality import COUNT_POLICY_REVISION, pair_quality, accept_pair, merge_duplicate_leaves, source_agreement, reference_assignment, refine_local_leakage
+    from chorus_medley import candidate_available, load_candidate, prefer_candidate
+    from chorus_runtime import voice_range
+
+REVISION = '8e750521b5942f4717656cac86a23cf0bd90dea5'
+RATE = 24000
+
+
+def load_model(root: Path):
+    manifest = json.loads((root / '固定资源.json').read_text(encoding='utf-8'))
+    if manifest['revision'] != REVISION:
+        raise ValueError('CHORUS_RESOURCE_REVISION')
+    for name, expected in manifest['files'].items():
+        path = (root / name).resolve()
+        if root.resolve() not in path.parents or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError('CHORUS_RESOURCE_HASH')
+    # Import the inference-only modules without the author's training/UI imports.
+    for name, folder in [('look2hear', root/'look2hear'),
+                         ('look2hear.models', root/'look2hear/models'),
+                         ('look2hear.models.layers', root/'look2hear/models/layers')]:
+        package = types.ModuleType(name)
+        package.__path__ = [str(folder)]
+        sys.modules[name] = package
+    name = 'look2hear.models.unmixx_model'
+    path = root / 'look2hear/models/unmixx_model.py'
+    source = path.read_text(encoding='utf-8')
+    # Asteroid's sole inference dependency is last-axis padding. No network,
+    # training dependencies or arbitrary checkpoint objects are executed.
+    source = source.replace('from asteroid.utils.torch_utils import pad_x_to_y',
+        'def pad_x_to_y(x, y):\n    return F.pad(x, (0, y.shape[-1] - x.shape[-1]))')
+    # Upstream computes b=[batch,source,time] but accidentally uses the flattened
+    # output in mixture consistency. Sum over sources, never over audio samples.
+    source = source.replace('reconstructed = pad_x_to_y(output, input)',
+                            'reconstructed = pad_x_to_y(b, input)')
+    module = types.ModuleType(name)
+    module.__package__ = 'look2hear.models'
+    sys.modules[name] = module
+    exec(compile(source, str(path), 'exec'), module.__dict__)
+    with contextlib.redirect_stdout(sys.stderr):
+        model = module.UNMIXX(sample_rate=RATE, out_channels=128, in_channels=256,
+            num_blocks=8, upsampling_depth=5, win=960, stride=240, num_sources=2)
+    ckpt = torch.load(root/'ckpt/best.ckpt', map_location='cpu', weights_only=True)
+    state = {k.removeprefix('audio_model.'): v for k, v in ckpt['state_dict'].items()}
+    model.load_state_dict(state, strict=True)
+    return model.eval().cuda(), manifest, hashlib.sha256(source.encode()).hexdigest()
+
+
+def align_pair(previous: np.ndarray, current: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Assign the overlap by waveform error; do not reorder by pitch or volume."""
+    n = min(previous.shape[-1], current.shape[-1])
+    a, b = previous[:, -n:], current[:, :n]
+    direct = float(np.mean((a-b)**2))
+    reverse = float(np.mean((a-b[::-1])**2))
+    ambiguous = max(direct, reverse) < 1e-12 or abs(direct-reverse) < .08*max(direct, reverse)
+    return (current[::-1].copy() if reverse < direct else current), ambiguous
+
+
+@torch.inference_mode()
+def split_pair(model, audio: np.ndarray, reference=None) -> tuple[np.ndarray, list[dict]]:
+    # 12 s windows / 2 s overlap bound GPU memory, complementary linear fades
+    # keep correlated waveforms at unity gain. The first/last sample are retained.
+    window, overlap = RATE*12, RATE*2
+    if reference is not None and (reference.shape != (2,len(audio)) or not np.isfinite(reference).all()):
+        raise ValueError('CHORUS_INVALID_STEMS')
+    result = np.zeros((2, len(audio)), np.float32)
+    boundaries = []
+    end = 0
+    for start in range(0, len(audio), window-overlap):
+        stop = min(start+window, len(audio))
+        x = audio[start:stop]
+        minimum = getattr(model, 'min_input_samples', 960)
+        if len(x) < minimum:
+            x = np.pad(x, (0, minimum-len(x)))
+        y = model(torch.from_numpy(x)[None, None].cuda(), istest=True)[0]
+        y = y[0, :, :stop-start].float().cpu().numpy()
+        if y.shape != (2, stop-start) or not np.isfinite(y).all():
+            raise ValueError('CHORUS_INVALID_STEMS')
+        n = max(0, end-start)
+        ambiguous = False
+        assignment = reference_assignment(y, reference[:,start:stop]) if reference is not None else None
+        if assignment and assignment['confident']:
+            if assignment['swapped']: y = y[::-1].copy()
+            method = 'full-song-reference'
+        elif n:
+            y, ambiguous = align_pair(result[:, start:end], y)
+            method = 'overlap-fallback' if reference is not None else 'overlap'
+        else:
+            method = 'initial'
+        if n:
+            weight = np.linspace(0, 1, n, dtype=np.float32)
+            result[:, start:end] = result[:, start:end]*(1-weight) + y[:, :n]*weight
+        result[:, start+n:stop] = y[:, n:]
+        boundaries.append({'startSample': start, 'endSample': stop, 'assignmentUncertain': ambiguous,
+            'assignmentMethod': method, **({'referenceAssignment':assignment} if assignment else {})})
+        end = stop
+        if stop == len(audio): break
+    return result, boundaries
+
+
+def split_evidence(pair: np.ndarray) -> dict:
+    return pair_quality(pair)
+
+
+def refine_pair_context(model, audio, pair, boundaries):
+    """Retry a correlated estimate with a shifted context, not a DSP mask.
+
+    Select a learned estimate only when overlap leakage improves. Never average
+    disagreeing assignments: that can mix the singers back together.
+    """
+    before = split_evidence(pair)
+    if before['duplicateCandidate'] or not before['crossTalkRisk']:
+        return pair, boundaries, {'retried':False}
+    offset = RATE*5
+    trial, trial_bounds = split_pair(model, np.pad(audio,(offset,0)))
+    trial = trial[:,offset:]
+    trial, ambiguous = align_pair(pair,trial)
+    after = split_evidence(trial)
+    def leakage(info):
+        return info['highCoherenceRatio']+.25*info['sharedCoherenceMedian']+.25*info['waveformCorrelation']
+    selected = (not ambiguous and not after['duplicateCandidate']
+        and after['secondaryEnergyRatio']>=.04 and leakage(after)<leakage(before)-.05)
+    evidence = {'retried':True,'offsetSamples':offset,'selected':'shifted' if selected else 'original',
+        'assignmentUncertain':ambiguous,'original':before,'shifted':after}
+    if selected:
+        trial_bounds = [{**b, 'startSample':max(0,b['startSample']-offset),
+            'endSample':min(len(audio),b['endSample']-offset)} for b in trial_bounds
+            if b['endSample']>offset and b['startSample']<len(audio)+offset]
+    return (trial,trial_bounds,evidence) if selected else (pair,boundaries,evidence)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--root', type=Path, required=True)
+    p.add_argument('--input', type=Path, required=True)
+    p.add_argument('--output-dir', type=Path, required=True)
+    p.add_argument('--count', choices=['auto','2','3','4'], default='auto')
+    a = p.parse_args()
+    torch.manual_seed(777)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    audio, rate = sf.read(a.input, dtype='float32', always_2d=True)
+    audio = audio.mean(axis=1)
+    if not np.isfinite(audio).all(): raise ValueError('CHORUS_INVALID_INPUT')
+    if rate != RATE:
+        import math
+        gcd = math.gcd(rate, RATE)
+        audio = resample_poly(audio, RATE//gcd, rate//gcd).astype(np.float32)
+    model, manifest, code_hash = load_model(a.root)
+    tracks, bounds = split_pair(model, audio)
+    original = split_evidence(tracks)
+    candidate_selection = {'attempted':False, 'selected':'unmixx'}
+    candidate_manifest = None
+    local_reference = None
+    local_manifest = None
+    count_confirmation = {'required':a.count=='auto','confirmed':a.count!='auto'}
+    # Quiet local leakage can evade the global crossTalkRisk flag. Manual
+    # singer counts need the same independent separation check as auto mode.
+    if candidate_available():
+        candidate_selection['attempted'] = True
+        try:
+            alternate, alternate_manifest = load_candidate()
+            trial, trial_bounds = split_pair(alternate,audio)
+            after = split_evidence(trial)
+            local_reference, local_manifest = trial, alternate_manifest
+            agreement=source_agreement(tracks,trial)
+            # Waveform-only overlap matching loses identity through solo/quiet
+            # sections. Retry permutations using a full-song learned reference.
+            # Keep all UNMIXX samples; never mix reference audio into its output.
+            tracking = {'attempted':False}
+            if not agreement['consistent'] and accept_pair(original,False) and accept_pair(after,False):
+                tracked, tracked_bounds = split_pair(model,audio,reference=trial)
+                tracked_agreement = source_agreement(tracked,trial)
+                tracking = {'attempted':True,'selected':bool(tracked_agreement['consistent'] and accept_pair(split_evidence(tracked),False)),
+                    'before':agreement,'after':tracked_agreement,'boundaries':tracked_bounds}
+                if tracking['selected']:
+                    tracks, bounds = tracked, tracked_bounds
+                    agreement = tracked_agreement
+            candidate_selection['globalTracking'] = tracking
+            candidate_selection.update({'original':original,'candidate':after,
+                'revision':alternate_manifest['revision'],'modelSha256':alternate_manifest['modelSha256'],
+                'checkpointSha256':alternate_manifest['checkpointSha256'],'checkpointPath':alternate_manifest['checkpointPath']})
+            count_confirmation.update({'confirmed':a.count!='auto' or (accept_pair(after,False) and agreement['consistent'] and not tracking.get('selected')),
+                'candidatesReady':bool(accept_pair(after,False) and agreement['consistent']),
+                'independentEvidence':after,'sourceAgreement':agreement,
+                'assignmentAssisted':bool(tracking.get('selected')),'humanCountVerified':False})
+            if prefer_candidate(original,after,any(b['assignmentUncertain'] for b in trial_bounds)):
+                tracks, bounds, model = trial, trial_bounds, alternate
+                candidate_manifest = alternate_manifest
+                candidate_selection['selected'] = 'medleyvox'
+        except (OSError,ValueError,RuntimeError) as error:
+            candidate_selection['failure'] = type(error).__name__
+    tracks, bounds, context = refine_pair_context(model,audio,tracks,bounds)
+    local_refinement = {'selectedSeconds':0., 'attempted':False}
+    if local_reference is not None and candidate_manifest is None:
+        tracks, local_refinement = refine_local_leakage(tracks,local_reference)
+        local_refinement.update({'attempted':True,'referenceModelSha256':local_manifest['modelSha256'],
+            'referenceCheckpointSha256':local_manifest['checkpointSha256']})
+    evidence = [{'parent': 'mix', **split_evidence(tracks), 'boundaries': bounds}]
+    # The two-source model is not a trained singer-count classifier.
+    # Recursively splitting a clean singer can partition registers/articulation
+    # into invented people. Automatic mode never makes that unsupported jump.
+    # Three/four sources remain available through explicit manual count.
+    wanted = 2 if a.count == 'auto' else int(a.count)
+    leaves = [t for t in tracks] if accept_pair(evidence[0], a.count!='auto') and (
+        count_confirmation['confirmed'] or count_confirmation.get('candidatesReady')) else [audio]
+    while 1<len(leaves)<wanted:
+        candidates = []
+        for i, leaf in enumerate(leaves):
+            pair, boundaries = split_pair(model, leaf)
+            info = split_evidence(pair)
+            evidence.append({'parent': i, **info, 'boundaries': boundaries})
+            if info['distinctCandidate'] and not info['crossTalkRisk']:
+                candidates.append((info['secondaryEnergyRatio']*(1-info['waveformCorrelation']), i, pair))
+        if not candidates: break
+        _, i, pair = max(candidates, key=lambda v: v[0])
+        leaves[i:i+1] = list(pair)
+    leaves, merged = merge_duplicate_leaves(leaves)
+    if evidence[0]['duplicateCandidate']:
+        merged.insert(0,{'first':1,'second':2,'waveformCorrelation':evidence[0]['waveformCorrelation']})
+    final_pairs = [split_evidence(np.stack([leaves[i],leaves[j]]))
+        for i in range(len(leaves)) for j in range(i+1,len(leaves))]
+    separation_status = ('single-or-unresolved' if len(leaves)==1 else
+        'needs-review' if count_confirmation.get('assignmentAssisted') or local_refinement['selectedSeconds']
+            or any(info['crossTalkRisk'] for info in final_pairs) else 'separated')
+    a.output_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, track in enumerate(leaves):
+        path = a.output_dir / f'singer-{i+1}.wav'
+        sf.write(path, track, RATE, subtype='FLOAT')
+        paths.append(str(path.resolve()))
+    payload = {'engine': 'medleyvox-candidate' if candidate_manifest else
+        'unmixx-medley-local' if local_refinement['selectedSeconds'] else 'unmixx-recursive',
+        'modelRevision': candidate_manifest['revision'] if candidate_manifest else REVISION,
+        'modelSha256': candidate_manifest['modelSha256'] if candidate_manifest else manifest['files']['ckpt/best.ckpt'],
+        'adaptedCodeSha256': candidate_manifest['exportCodeSha256'] if candidate_manifest else code_hash,
+        'sampleRate': RATE, 'frames': len(audio), 'tracks': paths,
+        'requestedCount': a.count, 'estimatedCount': len(leaves), 'countNeedsReview': True,
+        'experimentalRecursive': len(leaves)>2, 'evidence': evidence,
+        'automaticCountLimit':2,'countPolicyRevision':COUNT_POLICY_REVISION,'voiceRanges':[voice_range(track) for track in leaves],
+        'separationStatus':separation_status,'duplicateMerges':merged,
+        'contextRefinement':context,
+        'localLeakageRefinement':local_refinement,
+        'candidateSelection':candidate_selection,'countConfirmation':count_confirmation,
+        'finalPairDiagnostics':final_pairs,
+        'separationDiagnostics':[{k:v for k,v in info.items() if k not in {'boundaries'}} for info in evidence],
+        'reconstructionRms': float(np.sqrt(np.mean((np.sum(leaves, axis=0)-audio).astype(np.float64)**2)))}
+    (a.output_dir/'analysis.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    print(json.dumps(payload))
+
+
+if __name__ == '__main__': main()

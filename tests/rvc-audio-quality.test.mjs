@@ -1,0 +1,480 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+const workerSource = await readFile(
+  new URL("assets/rvc-engine/inference.worker.js", root),
+  "utf8",
+);
+
+function extractFunction(name, sourceText = workerSource) {
+  const marker = `function ${name}`;
+  const start = sourceText.indexOf(marker);
+  assert.ok(start >= 0, `missing ${name}`);
+  const bodyStart = sourceText.indexOf("{", start);
+  let depth = 0;
+  for (let index = bodyStart; index < sourceText.length; index += 1) {
+    if (sourceText[index] === "{") depth += 1;
+    if (sourceText[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return sourceText.slice(start, index + 1);
+    }
+  }
+  throw new Error(`unterminated ${name}`);
+}
+
+function evaluateFunction(name, dependencyNames = [], dependencyValues = [], sourceText = workerSource) {
+  const source = extractFunction(name, sourceText);
+  return Function(...dependencyNames, `"use strict"; return (${source});`)(...dependencyValues);
+}
+
+function maxAbs(values) {
+  let peak = 0;
+  for (const value of values) peak = Math.max(peak, Math.abs(value));
+  return peak;
+}
+
+function sine(length, amplitude, cycles = 100) {
+  return Float32Array.from(
+    { length },
+    (_, index) => amplitude * Math.sin((2 * Math.PI * cycles * index) / length),
+  );
+}
+
+test("RVC keeps ordinary input level and applies the shout guard before peak protection", () => {
+  const conditionInputAudio = evaluateFunction("conditionInputAudio");
+  const ordinary = conditionInputAudio(sine(16000, 0.1), 16000);
+  assert.ok(maxAbs(ordinary) > 0.07);
+  assert.ok(maxAbs(ordinary) < 0.13);
+
+  const overRange = conditionInputAudio(sine(16000, 1.4), 16000);
+  assert.ok(maxAbs(overRange) <= 0.901);
+  assert.ok(maxAbs(overRange) > 0.7);
+  const sustainedPeak = maxAbs(overRange.subarray(4000));
+  assert.ok(sustainedPeak < 0.86, "sustained shouted audio should be gently contained");
+});
+
+test("cloud submission cooldown survives reloads without trusting corrupt timestamps", async () => {
+  const clientSource = await readFile(new URL("assets/rvc.js", root), "utf8");
+  const dependencies = ["RVC_SUBMISSION_STORAGE_KEY", "RVC_SUBMISSION_COOLDOWN_MS"];
+  const values = ["postprep_rvc_last_cloud_submission_v1", 20_000];
+  const readCloudSubmissionTimestamp = evaluateFunction("readCloudSubmissionTimestamp", dependencies, values, clientSource);
+  const persistCloudSubmissionTimestamp = evaluateFunction("persistCloudSubmissionTimestamp", [dependencies[0]], [values[0]], clientSource);
+  const valuesByKey = new Map([[values[0], "90000"]]);
+  const storage = {
+    getItem: (key) => valuesByKey.get(key) || null,
+    setItem: (key, value) => valuesByKey.set(key, value),
+  };
+
+  assert.equal(readCloudSubmissionTimestamp(storage, 100_000), 90_000);
+  persistCloudSubmissionTimestamp(105_000, storage);
+  assert.equal(readCloudSubmissionTimestamp(storage, 105_001), 105_000);
+  valuesByKey.set(values[0], "200001");
+  assert.equal(readCloudSubmissionTimestamp(storage, 100_000), 0);
+  valuesByKey.set(values[0], "not-a-number");
+  assert.equal(readCloudSubmissionTimestamp(storage, 100_000), 0);
+});
+
+test("RMS mix follows official semantics: 1 is unchanged and 0 follows source", () => {
+  const applyRmsVolumeEnvelope = evaluateFunction("applyRmsVolumeEnvelope");
+  const source = sine(3200, 0.1, 20);
+  const synth = sine(8000, 0.5, 50);
+
+  assert.equal(applyRmsVolumeEnvelope(source, synth, 1, 40000), synth);
+  const followed = applyRmsVolumeEnvelope(source, synth, 0, 40000);
+  assert.notEqual(followed, synth);
+  assert.ok(maxAbs(followed.subarray(800, 6000)) < maxAbs(synth.subarray(800, 6000)));
+  const half = applyRmsVolumeEnvelope(new Float32Array(16000).fill(.1), new Float32Array(40000).fill(.5), .5, 40000);
+  assert.ok(Math.abs(half[20000] / .5 - Math.sqrt(.2)) < .001);
+});
+
+test("transparent output safety gain does not colour normal audio", () => {
+  const normalizeOutputPeak = evaluateFunction("normalizeOutputPeak");
+  const ordinary = sine(4000, 0.4, 25);
+  const original = new Float32Array(ordinary);
+  assert.equal(normalizeOutputPeak(ordinary), ordinary);
+  assert.deepEqual(ordinary, original);
+
+  const loud = sine(4000, 1.3, 25);
+  normalizeOutputPeak(loud);
+  assert.ok(maxAbs(loud) <= 0.951);
+  for (const invalid of [NaN, Infinity, -Infinity]) {
+    const broken = sine(4000, 1.3, 25);
+    broken[7] = invalid;
+    assert.throws(() => normalizeOutputPeak(broken), /Non-finite synthesis output at sample 7/);
+    assert.ok(Object.is(broken[7], invalid), 'invalid synthesis is rejected, never cleared');
+  }
+});
+
+test("burst repair marks sustained high frequencies without colouring them", () => {
+  const filter = evaluateFunction('applyBiquadFilterInPlace');
+  const lowpass = evaluateFunction('createBiquadLowpass');
+  const repair = evaluateFunction('suppressDetectedHarshBursts',
+    ['applyBiquadFilterInPlace','createBiquadLowpass'],[filter,lowpass]);
+  const sustained = sine(40000,.8,10000);
+  const evidence = {};
+  assert.equal(repair(sustained,40000,evidence),sustained);
+  assert.equal(evidence.differenceRms,0);
+  assert.equal(evidence.runs[0].action,'mark_sustained_unproven');
+  assert.equal(evidence.runs[0].durationSamples,40000);
+  const short = sine(40000,.1,440);
+  short.set(sine(400,.8,100),20000);
+  const shortEvidence = {};
+  const repaired = repair(short,40000,shortEvidence);
+  assert.ok(shortEvidence.runs.some(run=>run.action==='repair_short_burst'));
+  assert.ok(shortEvidence.differenceRms>0);
+  assert.deepEqual(repaired.subarray(0,19000),short.subarray(0,19000));
+});
+
+test("RMVPE salience decoder supports class-last and class-first tensors", () => {
+  const rmvpeParams = {
+    nClass: 360,
+    centsPerBin: 20,
+    centsOffset: 1997.379408437619,
+  };
+  const decodeSalienceToF0 = evaluateFunction(
+    "decodeSalienceToF0",
+    ["RMVPE_PARAMS"],
+    [rmvpeParams],
+  );
+  const frameCount = 2;
+  const peaks = [80, 170];
+  const classLast = new Float32Array(frameCount * rmvpeParams.nClass);
+  const classFirst = new Float32Array(frameCount * rmvpeParams.nClass);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    classLast[frame * rmvpeParams.nClass + peaks[frame]] = 1;
+    classFirst[peaks[frame] * frameCount + frame] = 1;
+  }
+  const lastResult = decodeSalienceToF0(classLast, frameCount, 0.03, false);
+  const firstResult = decodeSalienceToF0(classFirst, frameCount, 0.03, true);
+  assert.deepEqual(firstResult, lastResult);
+  assert.ok(lastResult.every((value) => value > 0));
+});
+
+test("local dynamics retain the final gain through the tail", () => {
+  const applyEnvelope = evaluateFunction("applyRmsVolumeEnvelope");
+  const input = new Float32Array(16000).fill(.05);
+  const synth = new Float32Array(40000).fill(.1);
+  const out = applyEnvelope(input, synth, 0, 40000);
+  assert.ok(Math.abs(out[39999] - out[38000]) < .00001);
+  assert.ok(out[39999] < .06);
+});
+
+test("local weak-signal threshold cannot add a ten-decibel gain transition", () => {
+  const applyEnvelope = evaluateFunction('applyRmsVolumeEnvelope');
+  const source = Float32Array.from({length:32000},(_,i)=>
+    Math.SQRT2*Math.sin(2*Math.PI*400*i/16000)*(i<16000?.0029:.0031));
+  const target = Float32Array.from({length:80000},(_,i)=>
+    Math.SQRT2*.1*Math.sin(2*Math.PI*400*i/40000));
+  const output = applyEnvelope(source,target,.5,40000);
+  const medianGain=(start,end)=>{
+    const gains=[];
+    for(let i=start;i<end;i++)if(Math.abs(target[i])>.0001)gains.push(output[i]/target[i]);
+    gains.sort((a,b)=>a-b);return gains[Math.floor(gains.length/2)];
+  };
+  assert.ok(Math.abs(20*Math.log10(medianGain(52000,76000)/medianGain(8000,36000)))<1);
+});
+
+test("RVC page starts neutral and public voices prefer the cloud engine", async () => {
+  const [page, client, runtime, service] = await Promise.all([
+    readFile(new URL("rvc.html", root), "utf8"),
+    readFile(new URL("assets/rvc.js", root), "utf8"),
+    readFile(new URL("assets/rvc-engine/rvc-web-runtime.js", root), "utf8"),
+    readFile(new URL("rvc-service/app/main.py", root), "utf8"),
+  ]);
+
+  assert.match(page, /id="rvc-pitch"[^>]*value="0"/u);
+  assert.match(page, /id="rvc-protect"[^>]*value="0\.25"/u);
+  assert.match(page, /id="rvc-preset-same"[^>]*aria-pressed="true"/u);
+  assert.match(page, /id="rvc-preset-male-female"[^>]*aria-pressed="false"/u);
+  assert.match(page, /id="rvc-f0-method"/u);
+  assert.match(page, /value="fcpe"/u);
+  assert.doesNotMatch(page, /value="crepe"|value="harvest"/u);
+  assert.doesNotMatch(client, /pitchInput\.value = String\(model\.defaultPitch\)/u);
+  assert.doesNotMatch(workerSource, /filteredF0 = stabilizeShoutingPitchF0/u);
+  assert.doesNotMatch(workerSource, /stabilizeF0ByWaveform\(f0, audio, confidence\)/u);
+  assert.doesNotMatch(workerSource, /finalAudio = applyHarmonicAirAndWarmth/u);
+  assert.match(workerSource, /finalAudio = normalizeOutputPeak\(finalAudio\)/u);
+  assert.match(workerSource, /finalAudio = suppressDetectedHarshBursts\(finalAudio, finalSr, burstDiagnostics\)/u);
+  assert.match(page, /assets\/rvc\.js\?v=20261113-github-move1/u);
+  assert.match(page, /id="rvc-rms-mix"[^>]*value="0\.5"/u);
+  assert.match(client, /rvc-filter-radius"\)\?\.value \|\| "0"/u);
+  assert.match(client, /function runOfficialRvcInference\(\{ allowDeviceFallback = false, endpointCandidates \} = \{\}\)/u);
+  assert.match(client, /function runWebRvcInference\(\{ allowLong = false, fallback = false \} = \{\}\)/u);
+  assert.match(client, /OFFICIAL_RVC_STATUS_ENDPOINT/u);
+  assert.match(client, /OFFICIAL_RVC_MODELS_ENDPOINT/u);
+  assert.match(client, /function officialRoutes\(endpoint\)/u);
+  assert.match(client, /convertUrl: base/u);
+  assert.match(client, /DEVICE_FALLBACK_MAX_AUDIO_SECONDS = 1200/u);
+  assert.match(client, /RVC_SUBMISSION_COOLDOWN_MS = 20 \* 1000/u);
+  assert.match(client, /cooldownRemainingMs = RVC_SUBMISSION_COOLDOWN_MS/u);
+  assert.match(client, /postprep_rvc_last_cloud_submission_v1/u);
+  assert.match(client, /persistCloudSubmissionTimestamp\(state\.lastCloudSubmissionAt\)/u);
+  assert.match(client, /isDeviceFallbackEligible/u);
+  assert.match(client, /runOfficialRvcInference\(\{ allowDeviceFallback: !isAppleMobile\(\) \}\)/u);
+  assert.match(client, /runWebRvcInference\(\{ allowLong: true, fallback: true \}\)/u);
+  assert.match(client, /const LOCAL_MAX_AUDIO_SECONDS = 20/u);
+  assert.match(client, /const MAX_AUDIO_SECONDS = 900/u);
+  assert.match(client, /const LONG_AUDIO_THRESHOLD_SECONDS = 45/u);
+  assert.match(client, /state\.audio\.duration > DEVICE_FALLBACK_MAX_AUDIO_SECONDS/u);
+  assert.match(client, /localTimeoutMs/u);
+  assert.match(client, /postprep_rvc_inference_mode_v32/u);
+  assert.match(client, /CLOUD_STATUS_TIMEOUT_MS = 15000/u);
+  assert.match(client, /CLOUD_CONVERT_TIMEOUT_MS = 220000/u);
+  assert.match(client, /CLOUD_MAX_CONVERT_TIMEOUT_MS = 600000/u);
+  assert.match(client, /function prepareCloudUploadAudio\(audio, audioMode = "voice"\)/u);
+  assert.match(client, /function cloudRequestTimeoutMs\(fileSize, durationSeconds, audioMode = "voice"\)/u);
+  assert.match(client, /function pollCloudOutput\(url, timeoutMs, longJob = false\)/u);
+  assert.match(client, /function downloadLongCloudOutput\(url, firstResponse, format, timeoutMs\)/u);
+  assert.match(client, /CLOUD_MAX_LONG_JOB_TIMEOUT_MS = 45 \* 60 \* 1000/u);
+  assert.match(client, /body\.set\("requestId", cloudRequestId\)/u);
+  assert.match(client, /function cloudRvcFailureMessage\(error\)/u);
+  assert.match(client, /error\.code = errCode/u);
+  assert.doesNotMatch(client, /云端 RVC 引擎暂未完成本次请求，请重试/u);
+  assert.doesNotMatch(client, /官方 RVC GPU 服务暂不可用/u);
+  assert.match(client, /OWN_MODEL_PREFIX/u);
+  assert.match(workerSource, /extractHubertFeatures[\s\S]*?normalize: false/u);
+  assert.match(workerSource, /processAudioInFixedFrameWindows/u);
+  assert.match(workerSource, /frameCount: priorSession\?sharedFrames:100/u);
+  assert.match(workerSource, /maxFrames: chunkingConfig\.frameCount/u);
+  assert.doesNotMatch(workerSource, /extractHubertFeatures[\s\S]{0,180}?normalize: true/u);
+  assert.match(workerSource, /fMin: 30,/u);
+  assert.match(workerSource, /2595 \* Math\.log10\(1 \+ hz \/ 700\)/u);
+  assert.match(workerSource, /medianFilterEnabled = options\.medianFilter === true/u);
+  assert.match(client, /rvc-web-runtime\.js\?v=20261104-audio1/u);
+  assert.match(client, /function preferredCloudOutputFormat\(durationSeconds = 0\)/u);
+  assert.match(client, /MOBILE_AUDIO_USER_AGENT/u);
+  assert.match(client, /body\.set\("format", outputFormat\)/u);
+  assert.match(client, /body\.set\("f0Method", f0Method\)/u);
+  assert.match(client, /body\.set\("f0_method", f0Method\)/u);
+  assert.match(client, /readCloudAudioBody\(response,/u);
+  assert.match(runtime, /v=20261104-audio1/u);
+  assert.match(runtime, /typeof rawWasm === "string"/u);
+  assert.match(client, /ort-wasm-simd-threaded\.mjs/u);
+  assert.match(client, /ort-wasm-simd-threaded\.wasm/u);
+  assert.match(client, /CHARACTER_MODEL_ASSET_VERSION = "20260919-v37"/u);
+  assert.match(client, /function officialMediaUrl\(jobId, token\)/u);
+  assert.match(client, /await attachResultAudio\(resultAudio, mediaUrl, streaming\)/u);
+  assert.match(page, /media-src[^;"]*https:\/\/postprep-ae6\.pages\.dev/u);
+  assert.match(client, /characterModelCacheKey\(selectedModel\)/u);
+  assert.match(client, /chunks\.map\(\(path\) => versionCharacterChunkPath\(path, modelConfig\)\)/u);
+  assert.match(page, /id="rvc-index-rate"[^>]*value="0\.3"/u);
+  assert.doesNotMatch(page, /<div hidden>[\s\S]{0,240}?id="rvc-index-rate"/u);
+  assert.match(client, /deriveStableNoiseSeed\(freshAudioInput, selectedModel\.id\)/u);
+  assert.match(client, /indexRate: indexRateVal/u);
+  assert.match(service, /repair_vocal_file\(output_wav\)/u);
+  assert.doesNotMatch(service, /afftdn=/u, "clean voices must not be unconditionally FFT-denoised");
+  assert.doesNotMatch(service, /speechnorm=p=/u, "quiet breath/noise must not receive half-cycle expansion");
+  assert.match(service, /profile = analyze_audio_profile\(source\)/u);
+  assert.match(service, /selected_filter = SINGING_INPUT_FILTER if singing else HIGH_ENERGY_INPUT_FILTER if profile\.high_energy else INPUT_SAFETY_FILTER/u);
+  assert.match(service, /high_pitch: bool = False/u);
+  assert.match(service, /complex_pitch: bool = False/u);
+  assert.match(service, /profile_hint: AudioProfile \| None = None/u);
+  assert.match(service, /profile\.high_pitch or profile\.complex_pitch/u);
+  assert.match(service, /from app\.audio_repair import repair_vocal_file/u);
+  assert.match(service, /def select_f0_method\(/u);
+  assert.match(service, /methods\.append\("fcpe" if selected_method == "rmvpe" else "rmvpe"\)/u);
+  assert.match(service, /return used_method/u);
+  assert.match(service, /async def process_conversion_job\(/u);
+  assert.match(service, /record\.state = "processing"/u);
+  assert.match(service, /status_code=202/u);
+  assert.match(service, /MAX_AUDIO_SECONDS = 900/u);
+  assert.match(service, /record\.state not in \{"queued", "processing", "remixing"\}/u);
+  assert.match(service, /record\.expires_at = job_expiry\(\)/u);
+  assert.doesNotMatch(service, /SHOUT_HARSHNESS_GUARD_MODELS/u);
+  assert.match(service, /protect_true_peak/u);
+});
+
+test("all deployed character models expose caller-controlled noise without hidden random operators", {
+  skip: process.env.POSTPREP_SOURCE_ONLY === "1" && "Model binaries are hosted separately",
+}, async () => {
+  const catalog = JSON.parse(await readFile(new URL("assets/rvc-models.json", root), "utf8"));
+  const manifest = JSON.parse(await readFile(new URL("models/manifest.json", root), "utf8"));
+  assert.equal(catalog.models.length, 61);
+  assert.ok(catalog.models.some((model) => model.id === "serina"));
+  assert.ok(catalog.models.some((model) => model.id === "momoi"));
+  assert.ok(catalog.models.some((model) => model.id === "reisa"));
+  assert.ok(catalog.models.some((model) => model.id === "key"));
+  for (const model of catalog.models) {
+    let hasRndInput = false;
+    let hasSourceNoiseInput = false;
+    let totalSize = 0;
+    const hash = createHash("sha256");
+    for (const chunkPath of model.chunks) {
+      const chunk = await readFile(new URL(chunkPath, root));
+      totalSize += chunk.length;
+      hash.update(chunk);
+      hasRndInput ||= chunk.includes(Buffer.from("rnd"));
+      hasSourceNoiseInput ||= chunk.includes(Buffer.from(
+        model.excitationContract === "explicit-source-v1" ? "source_excitation" : "source_noise"));
+      assert.equal(chunk.includes(Buffer.from("RandomNormalLike")), false, `${model.id} contains hidden Gaussian randomness`);
+      assert.equal(chunk.includes(Buffer.from("RandomUniformLike")), false, `${model.id} contains hidden phase randomness`);
+    }
+    assert.equal(hasRndInput, true, `${model.id} is missing rnd input`);
+    assert.equal(hasSourceNoiseInput, true, `${model.id} is missing source_noise input`);
+    const manifestEntry = Object.values(manifest).find((entry) => entry.chunks?.[0] === model.chunks[0]);
+    assert.ok(manifestEntry, `${model.id} missing manifest entry`);
+    assert.equal(totalSize, manifestEntry.totalSize, `${model.id} manifest size`);
+    assert.equal(hash.digest("hex"), manifestEntry.sha256, `${model.id} manifest hash`);
+    const retrieval = await readFile(new URL(model.retrieval, root));
+    assert.equal(retrieval.subarray(0, 4).toString("ascii"), "PPRI", `${model.id} retrieval header`);
+  }
+});
+
+test("v24 exporter exposes both latent and NSF excitation noise", async () => {
+  const source = await readFile(new URL("tools/export-rvc-explicit-noise.py", root), "utf8");
+  assert.match(source, /z_p = \(m_p \+ torch\.exp\(logs_p\) \* rnd\) \* x_mask/u);
+  assert.match(source, /source_noise/u);
+  assert.doesNotMatch(source, /torch\.randn_like/u);
+});
+
+test("model publisher handles Unicode workspace paths and records content hashes", async () => {
+  const source = await readFile(new URL("tools/publish-own-model.mjs", root), "utf8");
+  assert.match(source, /fileURLToPath\(import\.meta\.url\)/u);
+  assert.match(source, /createHash\("sha256"\)\.update\(buf\)\.digest\("hex"\)/u);
+  assert.match(source, /totalSize: buf\.length, sha256, chunks: chunkList/u);
+});
+
+test("continuous F0 is not flattened while the coarse embedding stays bounded", () => {
+  const applyPitchShift = evaluateFunction("applyPitchShift");
+  const shifted = applyPitchShift(Float32Array.from([0, 30, 550, 900]), 12);
+  assert.equal(shifted[0], 0);
+  assert.equal(shifted[1], 60);
+  assert.equal(shifted[2], 1100);
+  assert.equal(shifted[3], 1800);
+
+  const buildQuantizedPitch = evaluateFunction(
+    "buildQuantizedPitch",
+    ["F0_MEL_MIN", "F0_MEL_MAX"],
+    [1127 * Math.log(1 + 50 / 700), 1127 * Math.log(1 + 1100 / 700)],
+  );
+  assert.deepEqual([...buildQuantizedPitch(shifted, shifted.length)], [1n, 5n, 255n, 255n]);
+});
+
+test("seeded synthesis noise is finite and exactly reproducible", () => {
+  const createSeededRandom = evaluateFunction("createSeededRandom");
+  const fillSeededGaussian = evaluateFunction(
+    "fillSeededGaussian",
+    ["createSeededRandom"],
+    [createSeededRandom],
+  );
+  const first = fillSeededGaussian(new Float32Array(128), 12345, 0.5);
+  const repeat = fillSeededGaussian(new Float32Array(128), 12345, 0.5);
+  const other = fillSeededGaussian(new Float32Array(128), 12346, 0.5);
+  assert.deepEqual(first, repeat);
+  assert.notDeepEqual(first, other);
+  assert.equal(first.every(Number.isFinite), true);
+});
+
+test("overlapping browser windows reuse timeline-aligned latent and NSF noise", () => {
+  const counterRandom = evaluateFunction("counterRandom");
+  const timelineGaussian = evaluateFunction(
+    "timelineGaussian",
+    ["counterRandom"],
+    [counterRandom],
+  );
+  class Tensor {
+    constructor(_type, data, dims) {
+      this.data = data;
+      this.dims = dims;
+    }
+  }
+  const buildRndTensor = evaluateFunction(
+    "buildRndTensor",
+    ["Te", "timelineGaussian"],
+    [Tensor, timelineGaussian],
+  );
+  const buildSourceNoiseTensor = evaluateFunction(
+    "buildSourceNoiseTensor",
+    ["Te", "timelineGaussian"],
+    [Tensor, timelineGaussian],
+  );
+
+  const firstLatent = buildRndTensor(100, 12345, 0.35, 0).data;
+  const nextLatent = buildRndTensor(100, 12345, 0.35, 75).data;
+  for (let channel = 0; channel < 192; channel += 1) {
+    for (let frame = 0; frame < 25; frame += 1) {
+      assert.equal(
+        firstLatent[channel * 100 + 75 + frame],
+        nextLatent[channel * 100 + frame],
+      );
+    }
+  }
+
+  const firstSource = buildSourceNoiseTensor(100, 400, 67890, 0).data;
+  const nextSource = buildSourceNoiseTensor(100, 400, 67890, 30_000).data;
+  assert.deepEqual(firstSource.slice(30_000), nextSource.slice(0, 10_000));
+  assert.equal(firstLatent.every(Number.isFinite), true);
+  assert.equal(firstSource.every(Number.isFinite), true);
+});
+
+test("retrieval codebook blends voiced frames and protects unvoiced consonants", () => {
+  const applyRetrievalCodebook = evaluateFunction("applyRetrievalCodebook");
+  const features = {
+    hiddenStates: new Float32Array(4),
+    featureSize: 2,
+    upsampledFrameCount: 2,
+  };
+  const codebook = { count: 1, dimension: 2, centers: Float32Array.from([2, 4]) };
+  const voiced = applyRetrievalCodebook(features, Float32Array.from([200, 200]), codebook, 0.5, 0.33);
+  const unvoiced = applyRetrievalCodebook(features, Float32Array.from([0, 0]), codebook, 0.5, 0.33);
+  const protectionDisabled = applyRetrievalCodebook(features, Float32Array.from([0, 0]), codebook, 0.5, 0.5);
+  assert.equal(voiced.hiddenStates[0], protectionDisabled.hiddenStates[0]);
+  assert.ok(protectionDisabled.hiddenStates[0] > unvoiced.hiddenStates[0]);
+  assert.ok([...unvoiced.hiddenStates].every(Number.isFinite));
+});
+
+test("retrieval protects each 10 ms consonant inside a 20 ms feature pair", () => {
+  const apply = evaluateFunction("applyRetrievalCodebook");
+  const features = { hiddenStates: new Float32Array(4), featureSize: 2, upsampledFrameCount: 2 };
+  const book = { count: 1, dimension: 2, centers: Float32Array.from([2, 4]) };
+  for (const f0 of [[200, 0], [0, 200]]) {
+    const out = apply(features, f0, book, .5, 0).hiddenStates;
+    for (let frame = 0; frame < 2; frame++) {
+      assert.equal(out[frame*2], f0[frame] ? 1 : 0);
+      assert.equal(out[frame*2+1], f0[frame] ? 2 : 0);
+    }
+  }
+});
+
+test("explicit NSF phase remains continuous through high notes and overlapping windows", () => {
+  class Tensor { constructor(_type,data,dims){Object.assign(this,{data,dims});} }
+  const shift=evaluateFunction("applyPitchShift");
+  const clock=evaluateFunction("buildPitchPhaseTimeline",["applyPitchShift"],[shift]);
+  const phaseAt=evaluateFunction("pitchPhaseAtFrame");
+  const excitation=evaluateFunction("buildSourceExcitationTensor",["Te"],[Tensor]);
+  const f0=Float32Array.from({length:400},(_,i)=>180+i*3.1);
+  f0.fill(0,200,206);
+  const timeline=clock(f0,3);
+  for(const upp of [320,400,480]) {
+    const noise={data:new Float32Array(f0.length*upp)};
+    const whole=excitation(timeline.shifted,f0.length,upp,noise,0).data;
+    const part=excitation(timeline.shifted.slice(145,245),100,upp,
+      {data:noise.data.slice(145*upp,245*upp)},phaseAt(timeline,145)).data;
+    for(let i=0;i<part.length;i++)assert.ok(Math.abs(part[i]-whole[145*upp+i])<2e-7);
+    assert.equal(maxAbs(whole.slice(200*upp,206*upp)),0);
+    assert.ok(whole.every(Number.isFinite));
+  }
+});
+
+test("pitch phase follows the same reflected context as the pitch samples", () => {
+  const shift=evaluateFunction("applyPitchShift");
+  const clock=evaluateFunction("buildPitchPhaseTimeline",["applyPitchShift"],[shift]);
+  const at=evaluateFunction("pitchPhaseAtFrame");
+  const timeline=clock(Float32Array.from([100,200,300,400]),0);
+  assert.equal(at(timeline,-2),-5);
+  assert.equal(at(timeline,0),0);
+  assert.equal(at(timeline,4),10);
+  assert.equal(at(timeline,6),15);
+});
+
+test("unverified waveform pitch repair is absent from the browser default", () => {
+  assert.doesNotMatch(workerSource, /stabilizeF0ByWaveform\(f0, audio, confidence\)/u);
+});
+
+test("browser retrieval uses the official Top-8 neighbour count", () => {
+  assert.match(workerSource, /const neighborCount = Math\.min\(8, codebook\.count\)/u);
+  assert.doesNotMatch(extractFunction("applyRetrievalCodebook"), /new Float64Array\(4\)/u);
+});

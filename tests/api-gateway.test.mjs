@@ -1,0 +1,437 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const source = await readFile(new URL("../worker/api-gateway.js", import.meta.url), "utf8");
+const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+const { default: gateway } = await import(moduleUrl);
+
+const SITE_ORIGIN = "https://senseixiaomisensei-sudo.github.io";
+const PAGES_ORIGIN = "https://postprep-ae6.pages.dev";
+const BASE_ENV = {
+  POSTPREP_UPSTREAM_URL: "https://postprep-ae6.pages.dev/api/text",
+  POSTPREP_GATEWAY_SECRET: "gateway-secret",
+  POSTPREP_RATE_LIMITER: { limit: async () => ({ success: true }) },
+};
+
+function request({ origin = SITE_ORIGIN, method = "POST", body = "{}" } = {}) {
+  const headers = {};
+  if (origin) headers.Origin = origin;
+  if (method === "POST") headers["Content-Type"] = "application/json";
+  return new Request("https://postprep-text-gateway.example.workers.dev/api/text", {
+    method,
+    headers,
+    body: method === "POST" ? body : undefined,
+  });
+}
+
+test("gateway rejects calls without an allowed Origin", async () => {
+  const response = await gateway.fetch(request({ origin: "" }), BASE_ENV);
+  const body = await response.json();
+  assert.equal(response.status, 403);
+  assert.equal(body.code, "ORIGIN_NOT_ALLOWED");
+});
+
+test("gateway fails closed when the global rate-limit binding is absent", async () => {
+  const response = await gateway.fetch(request(), {
+    POSTPREP_UPSTREAM_URL: BASE_ENV.POSTPREP_UPSTREAM_URL,
+    POSTPREP_GATEWAY_SECRET: BASE_ENV.POSTPREP_GATEWAY_SECRET,
+  });
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.code, "RATE_LIMITER_NOT_CONFIGURED");
+});
+
+test("gateway stops a limited request before it reaches the Pages Function", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    throw new Error("Rate-limited traffic must not reach the upstream function");
+  };
+
+  try {
+    const response = await gateway.fetch(request(), {
+      ...BASE_ENV,
+      POSTPREP_RATE_LIMITER: { limit: async () => ({ success: false }) },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 429);
+    assert.equal(body.code, "RATE_LIMITED");
+    assert.equal(response.headers.get("Retry-After"), "60");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway forwards an allowed request only with its internal header", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ ok: true, content: "#测试" });
+  };
+
+  try {
+    const response = await gateway.fetch(request({ body: '{"action":"hashtags"}' }), BASE_ENV);
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.url, BASE_ENV.POSTPREP_UPSTREAM_URL);
+    assert.equal(forwarded.options.headers.get("X-PostPrep-Gateway"), BASE_ENV.POSTPREP_GATEWAY_SECRET);
+    assert.equal(forwarded.options.headers.get("Origin"), SITE_ORIGIN);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), SITE_ORIGIN);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway permits the controlled Cloudflare Pages host", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ ok: true, content: "#测试" });
+  };
+
+  try {
+    const response = await gateway.fetch(request({ origin: PAGES_ORIGIN, body: '{"action":"hashtags"}' }), BASE_ENV);
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.options.headers.get("Origin"), PAGES_ORIGIN);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), PAGES_ORIGIN);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc route fails closed until its dedicated upstream and rate limiter exist", async () => {
+  const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc", {
+    method: "POST",
+    headers: { Origin: SITE_ORIGIN, "Content-Type": "multipart/form-data; boundary=test" },
+    body: "--test--",
+  });
+  const response = await gateway.fetch(request, BASE_ENV);
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.code, "RVC_BACKEND_NOT_CONFIGURED");
+});
+
+test("rvc route uses a separate limiter and fixed Pages upstream", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ ok: true, jobId: "11111111-2222-3333-8444-555555555555" });
+  };
+
+  try {
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc", {
+      method: "POST",
+      headers: { Origin: SITE_ORIGIN, "Content-Type": "multipart/form-data; boundary=test" },
+      body: "--test--",
+    });
+    const env = {
+      ...BASE_ENV,
+      POSTPREP_RVC_UPSTREAM_URL: "https://postprep-ae6.pages.dev/api/rvc",
+      POSTPREP_RVC_RATE_LIMITER: { limit: async ({ key }) => ({ success: key.startsWith("rvc:") }) },
+    };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.url, env.POSTPREP_RVC_UPSTREAM_URL);
+    assert.equal(forwarded.options.headers.get("X-PostPrep-Gateway"), BASE_ENV.POSTPREP_GATEWAY_SECRET);
+    assert.match(forwarded.options.headers.get("Content-Type"), /multipart\/form-data/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("gateway admits only the exact configured GPT Site origin", async () => {
+  const config = await readFile(new URL("../worker/wrangler.toml", import.meta.url), "utf8");
+  const allowed = config.match(/^ALLOWED_ORIGINS\s*=\s*"([^"]+)"/mu)?.[1];
+  assert.equal(allowed, "https://postprep-rvc.senseixx.chatgpt.site");
+  const env = { ...BASE_ENV, ALLOWED_ORIGINS: allowed };
+  const accepted = await gateway.fetch(request({ origin: allowed, method: "OPTIONS" }), env);
+  assert.equal(accepted.status, 204);
+  assert.equal(accepted.headers.get("Access-Control-Allow-Origin"), allowed);
+  const rejected = await gateway.fetch(request({ origin: "https://unrelated.senseixx.chatgpt.site", method: "OPTIONS" }), env);
+  assert.equal(rejected.status, 403);
+  assert.equal(rejected.headers.get("Access-Control-Allow-Origin"), null);
+});
+
+test("rvc limiter allows three submissions per minute and reserves one mobile retry", async () => {
+  const config = await readFile(new URL("../worker/wrangler.toml", import.meta.url), "utf8");
+  const rvcLimiter = config.split('name = "POSTPREP_RVC_RATE_LIMITER"')[1] || "";
+  assert.match(rvcLimiter, /limit = 4/u);
+  assert.match(rvcLimiter, /period = 60/u);
+});
+
+test("rvc routes use the authenticated narrow tunnel when direct credentials are configured", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ ready: true });
+  };
+  try {
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/status", {
+      headers: { Origin: PAGES_ORIGIN },
+    });
+    const env = {
+      ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+    };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.url, "https://voice-relay-example.trycloudflare.com/healthz");
+    assert.equal(
+      forwarded.options.headers.get("Authorization"),
+      `Bearer ${env.POSTPREP_RVC_INFERENCE_TOKEN}`,
+    );
+    assert.match(forwarded.options.headers.get("X-PostPrep-Request-Id"), /^[0-9a-f-]{36}$/u);
+    assert.equal(forwarded.options.headers.has("X-PostPrep-Gateway"), false);
+    assert.match(response.headers.get("X-PostPrep-Request-Id"), /^[0-9a-f-]{36}$/u);
+    assert.match(response.headers.get("Access-Control-Expose-Headers"), /X-PostPrep-Request-Id/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc status forwards only a valid model id and exposes the selected F0 header", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamUrl = "";
+  globalThis.fetch = async (url) => {
+    upstreamUrl = String(url);
+    return new Response(JSON.stringify({ ready: true }), {
+      headers: { "Content-Type": "application/json", "X-RVC-F0-Method": "rmvpe" },
+    });
+  };
+  try {
+    const env = {
+      ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+    };
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/status?modelId=hoshino", {
+      headers: { Origin: PAGES_ORIGIN },
+    });
+    const response = await gateway.fetch(request, env);
+    assert.equal(upstreamUrl, "https://voice-relay-example.trycloudflare.com/healthz?model_id=hoshino");
+    assert.match(response.headers.get("Access-Control-Expose-Headers"), /X-RVC-F0-Method/u);
+    const invalid = new Request("https://postprep-text-gateway.example.workers.dev/rvc/status?modelId=..evil", {
+      headers: { Origin: PAGES_ORIGIN },
+    });
+    await gateway.fetch(invalid, env);
+    assert.equal(upstreamUrl, "https://voice-relay-example.trycloudflare.com/healthz");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("TTS uses the authenticated narrow tunnel with JSON and the text limiter", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  let limiterKey = "";
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return new Response(new Uint8Array([73, 68, 51]), { headers: { "Content-Type": "audio/mpeg" } });
+  };
+  try {
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/tts", {
+      method: "POST",
+      headers: { Origin: PAGES_ORIGIN, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "发布之前，先让文字呼吸一下。" }),
+    });
+    const env = {
+      ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+      POSTPREP_RATE_LIMITER: {
+        limit: async ({ key }) => {
+          limiterKey = key;
+          return { success: true };
+        },
+      },
+    };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 200);
+    assert.match(limiterKey, /^rvc-tts:/u);
+    assert.equal(forwarded.url, "https://voice-relay-example.trycloudflare.com/v1/tts");
+    assert.equal(forwarded.options.headers.get("Content-Type"), "application/json");
+    assert.equal(
+      forwarded.options.headers.get("Authorization"),
+      `Bearer ${env.POSTPREP_RVC_INFERENCE_TOKEN}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc direct route rejects an arbitrary non-tunnel host", async () => {
+  const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/status", {
+    headers: { Origin: PAGES_ORIGIN },
+  });
+  const response = await gateway.fetch(request, {
+    ...BASE_ENV,
+    POSTPREP_RVC_DIRECT_BASE_URL: "https://example.com",
+    POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+  });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "RVC_BACKEND_NOT_CONFIGURED");
+});
+
+test("rvc output route rejects an arbitrary job address before any upstream fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    throw new Error("Invalid voice output must not reach Pages");
+  };
+  try {
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/output/not-a-job?token=short", {
+      headers: { Origin: SITE_ORIGIN },
+    });
+    const response = await gateway.fetch(request, {
+      ...BASE_ENV,
+      POSTPREP_RVC_OUTPUT_UPSTREAM_URL: "https://postprep-ae6.pages.dev/api/rvc-output",
+      POSTPREP_RVC_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(body.code, "INVALID_RVC_OUTPUT_TOKEN");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc output forwards a browser seek and preserves its partial response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (_url, options) => {
+      assert.equal(options.headers.get("Range"), "bytes=4096-4097");
+      return new Response(new Uint8Array([4, 2]), { status: 206, headers: {
+        "Content-Type": "audio/mpeg", "Content-Range": "bytes 4096-4097/9000",
+      } });
+    };
+    const request = new Request("https://postprep-text-gateway.example.workers.dev/rvc/output/11111111-2222-4333-8444-555555555555?token=output-token-with-at-least-32-characters", {
+      headers: { Origin: SITE_ORIGIN, Range: "bytes=4096-4097" },
+    });
+    const response = await gateway.fetch(request, { ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters" });
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("Content-Range"), "bytes 4096-4097/9000");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([4, 2]));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc remix route reaches only a token-bound job and exposes revision", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ state: "completed", mixRevision: 1 });
+  };
+  const job = "11111111-2222-4333-8444-555555555555";
+  const token = "wRcxamOTds_6CkZIVCF6mMlbmzuToi9YA2Jfgj9F8pk";
+  try {
+    const form = new FormData();
+    form.set("vocalGainDb", "-6");
+    const request = new Request(`https://postprep-text-gateway.example.workers.dev/rvc/output/${job}/remix?token=${token}`, {
+      method: "POST", headers: { Origin: PAGES_ORIGIN }, body: form,
+    });
+    const env = { ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters" };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.url, `https://voice-relay-example.trycloudflare.com/v1/output/${job}/remix?token=${token}`);
+    assert.match(response.headers.get("Access-Control-Expose-Headers"), /X-RVC-Mix-Revision/u);
+    assert.equal(forwarded.options.headers.get("Authorization"), `Bearer ${env.POSTPREP_RVC_INFERENCE_TOKEN}`);
+    const invalid = await gateway.fetch(new Request(
+      `https://postprep-text-gateway.example.workers.dev/rvc/output/not-a-job/remix?token=${token}`,
+      { method: "POST", headers: { Origin: PAGES_ORIGIN }, body: form },
+    ), env);
+    assert.equal(invalid.status, 400);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("capability-protected RVC output polling does not consume the task submission limiter", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json(
+      { jobId: "11111111-2222-4333-8444-555555555555", state: "processing", stage: "converting" },
+      { status: 202, headers: { "Retry-After": "8" } },
+    );
+  };
+  try {
+    const jobId = "11111111-2222-4333-8444-555555555555";
+    const token = "output-token-with-at-least-32-characters";
+    const request = new Request(
+      `https://postprep-text-gateway.example.workers.dev/rvc/output/${jobId}?token=${token}`,
+      { headers: { Origin: SITE_ORIGIN } },
+    );
+    const env = {
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+    };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 202);
+    assert.equal(forwarded.url, `https://voice-relay-example.trycloudflare.com/v1/output/${jobId}?token=${token}`);
+    assert.equal(forwarded.options.headers.get("Authorization"), `Bearer ${env.POSTPREP_RVC_INFERENCE_TOKEN}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rvc training upload uses a separate limiter and a token-constrained tunnel path", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  let limiterKey = "";
+  globalThis.fetch = async (url, options) => {
+    forwarded = { url: String(url), options };
+    return Response.json({ state: "uploading", files: 1 });
+  };
+  try {
+    const jobId = "11111111-2222-4333-8444-555555555555";
+    const token = "training-token-with-at-least-32-characters";
+    const request = new Request(
+      `https://postprep-text-gateway.example.workers.dev/rvc/train/upload/${jobId}/0?token=${token}`,
+      {
+        method: "POST",
+        headers: { Origin: PAGES_ORIGIN, "Content-Type": "multipart/form-data; boundary=test" },
+        body: "--test--",
+      },
+    );
+    const env = {
+      ...BASE_ENV,
+      POSTPREP_RVC_DIRECT_BASE_URL: "https://voice-relay-example.trycloudflare.com",
+      POSTPREP_RVC_INFERENCE_TOKEN: "rvc-direct-token-with-at-least-32-characters",
+      POSTPREP_RVC_TRAIN_RATE_LIMITER: {
+        limit: async ({ key }) => {
+          limiterKey = key;
+          return { success: true };
+        },
+      },
+    };
+    const response = await gateway.fetch(request, env);
+    assert.equal(response.status, 200);
+    assert.match(limiterKey, /^rvc-train-upload:/u);
+    assert.equal(
+      forwarded.url,
+      `https://voice-relay-example.trycloudflare.com/v1/training/${jobId}/audio/0?token=${token}`,
+    );
+    assert.equal(
+      forwarded.options.headers.get("Authorization"),
+      `Bearer ${env.POSTPREP_RVC_INFERENCE_TOKEN}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
