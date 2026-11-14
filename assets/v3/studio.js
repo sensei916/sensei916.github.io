@@ -82,7 +82,7 @@ export function initStudio(ctx) {
   const btnA = $('[data-play="a"]'), btnB = $('[data-play="b"]'), btnSwap = $('[data-play="swap"]');
   const C = 2 * Math.PI * 52; ringVal.style.strokeDasharray = `${C}`; ringVal.style.strokeDashoffset = `${C}`;
 
-  const S = { split: .5, A: null, B: null, aEl: null, bEl: document.getElementById('rvc-result-audio'), playing: null, emptyKey: 'waiting', progress: 0, busy: false, rev: { a: 0, b: 0 } };
+  const S = { split: .5, A: null, B: null, aEl: null, bEl: document.getElementById('rvc-result-audio'), playing: null, emptyKey: 'waiting', progress: null, busy: false, rev: { a: 0, b: 0 } };
 
   function localize() {
     el.setAttribute('aria-label', t('title'));
@@ -375,7 +375,7 @@ export function initStudio(ctx) {
   function syncProgress() {
     const pct = clamp(parseFloat(bar?.style.width) || 0, 0, 100);
     const busy = convert?.getAttribute('aria-busy') === 'true' || (wrap && !wrap.classList.contains('hidden') && pct > 0 && pct < 100);
-    if (S.progress !== pct || !ring.hasAttribute('aria-valuenow')) {
+    if (S.progress !== pct) {
       const rounded = String(Math.round(pct));
       ringVal.style.strokeDashoffset = String(C * (1 - pct / 100));
       ringNum.firstChild.textContent = rounded;
