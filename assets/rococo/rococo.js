@@ -6,7 +6,7 @@
   var TIME_KEY = "rococo-time";
   var root = document.documentElement;
   var darkMQ = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : { matches: false };
-  try { if (localStorage.getItem("postprep-ui-style") === "rococo") root.dataset.ui = "rococo"; } catch (e) {}
+  try { if (!window.PostPrepThemes && localStorage.getItem("postprep-ui-style") === "rococo") root.dataset.ui = "rococo"; } catch (e) {}
   function isRococo() { return root.dataset.ui === "rococo"; }
 
   var forced = null;
@@ -22,7 +22,7 @@
     return h >= 5 && h < 11 ? "morning" : h >= 11 && h < 17 ? "afternoon" : h >= 17 && h < 20 ? "dusk" : "night";
   }
   var themeMeta = document.querySelector('meta[name="theme-color"]');
-  var themeOriginal = themeMeta && themeMeta.getAttribute("content");
+  var themeOriginal = themeMeta && (themeMeta.getAttribute("data-postprep-original") || themeMeta.getAttribute("content"));
   if (themeMeta && !themeMeta.getAttribute("data-postprep-original")) themeMeta.setAttribute("data-postprep-original", themeOriginal);
   function applySky() {
     var p = phase();

@@ -11,11 +11,11 @@
   <meta name="color-scheme" content="light dark">
   <title>Skill 权限护照 | PostPrep</title>
   <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;✦&lt;/text&gt;&lt;/svg&gt;">
+  <script src="assets/liquid-ui.js?v=20261114-fast1"></script>
   <link rel="stylesheet" href="assets/postprep-tailwind.css?v=20260812-trust-passport">
-  <link rel="stylesheet" href="assets/vendor/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="assets/vendor/fontawesome/css/postprep-icons.css">
   <link rel="stylesheet" href="assets/postprep-motion.css?v=20260812-trust-passport">
   <link rel="stylesheet" href="assets/liquid-ui.css?v=20261004-compact-1">
-  <script src="assets/liquid-ui.js?v=20261105-ba1"></script>
   <link rel="stylesheet" href="assets/classic-glass.css?v=20261004-compact-1">
   <script type="module" src="assets/classic-glass.js?v=20261004-compact-1"></script>
   <!-- v3:head -->
@@ -25,12 +25,10 @@
   <script type="module" src="assets/v3/v3.js?v=20261031-v3d"></script>
   <!-- /v3:head -->
   <!-- rococo:head -->
-  <link rel="stylesheet" href="assets/rococo/rococo.css?v=20261107-apple1">
-  <script src="assets/rococo/rococo.js?v=20261107-apple1"></script>
+  <script>window.PostPrepThemes?.register("rococo", "assets/rococo/rococo.css?v=20261107-apple1", "assets/rococo/rococo.js?v=20261114-fast1");</script>
   <!-- /rococo:head -->
   <!-- ba:head -->
-  <link rel="stylesheet" href="assets/ba/ba.css?v=20261107-ba-apple1">
-  <script src="assets/ba/ba.js?v=20261107-ba-apple1"></script>
+  <script>window.PostPrepThemes?.register("ba", "assets/ba/ba.css?v=20261107-ba-apple1", "assets/ba/ba.js?v=20261114-fast1");</script>
   <!-- /ba:head -->
 </head>
 <body class="bg-canvas text-ink antialiased" data-page="passport" data-title-key="passport.title">
@@ -99,7 +97,7 @@
             <h3 class="text-base font-black" data-i18n="passport.deepTitle">深度解释风险信号</h3>
             <p class="mt-1 text-sm leading-6 text-muted" data-i18n="passport.deepHint">仅在你点击后，当前 Skill 文本才会发送到受保护的服务端代理。它不会被执行。</p>
           </div>
-          <button id="passport-deep-action" type="button" class="cloud-action-button inline-flex min-h-11 items-center gap-2 rounded-lg bg-brand px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-brandDark focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2" aria-busy="false"><i class="fa-solid fa-sparkles" aria-hidden="true"></i><span id="passport-deep-action-label" data-i18n="passport.deepAction">获取深度解释</span></button>
+          <button id="passport-deep-action" type="button" class="cloud-action-button inline-flex min-h-11 items-center gap-2 rounded-lg bg-brand px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-brandDark focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2" aria-busy="false"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i><span id="passport-deep-action-label" data-i18n="passport.deepAction">获取深度解释</span></button>
         </div>
         <div id="passport-deep-result" class="cloud-result mt-5 rounded-lg border border-teal-100 bg-teal-50/70 p-4" hidden>
           <p class="text-xs font-bold uppercase tracking-[0.14em] text-brand" data-i18n="passport.deepResultLabel">REVIEW NOTES</p>

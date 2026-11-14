@@ -35,6 +35,8 @@ export function initStudio(ctx) {
   if (el?.dataset.live) return;
   const lang = () => (document.documentElement.lang.startsWith('en') ? 'en' : 'zh');
   const t = k => T[lang()][k];
+  const mobile = !ctx.fine;
+  const animateBusy = () => S.busy && !mobile && !reduced.matches;
 
   if (!el) {
   el = document.createElement('section');
@@ -240,7 +242,7 @@ export function initStudio(ctx) {
   let onScreen = true;
   if (typeof IntersectionObserver === 'function') new IntersectionObserver(entries => {
     onScreen = entries.some(e => e.isIntersecting);
-    if (onScreen) { draw(); if (S.busy || S.playing) addTask(tick); }
+    if (onScreen) { draw(); if (animateBusy() || S.playing) addTask(tick); }
   }).observe(el);
   let gradB = null;
   function drawWave() {
@@ -296,7 +298,8 @@ export function initStudio(ctx) {
     if (ref && Number.isFinite(ref.duration) && ref.duration > 0) {
       const x = ref.currentTime / ref.duration * w;
       g.fillStyle = '#fff'; g.globalAlpha = .9; g.fillRect(Math.round(x), 0, Math.max(1, k * 1.5), h); g.globalAlpha = 1;
-      timeEl.textContent = `${fmt(ref.currentTime)} / ${fmt(ref.duration)}`;
+      const time = `${fmt(ref.currentTime)} / ${fmt(ref.duration)}`;
+      if (timeEl.textContent !== time) timeEl.textContent = time;
     }
     // Write only on change: these ran every animation frame and re-styled
     // the whole monitor subtree (freeze1).
@@ -330,7 +333,10 @@ export function initStudio(ctx) {
     const src = S.playing === 'b' ? S.B : S.playing === 'a' ? S.A : null;
     const el2 = S.playing === 'b' ? S.bEl : S.aEl;
     if (src?.mono && el2) spectrum(src.mono, el2.currentTime);
-    else for (let b = 0; b < BANDS; b++) bands[b] = S.busy && !reduced.matches ? .18 + .14 * Math.sin(now / 240 + b * .5) ** 2 : .04;
+    else {
+      const animate = animateBusy();
+      for (let b = 0; b < BANDS; b++) bands[b] = animate ? .18 + .14 * Math.sin(now / 240 + b * .5) ** 2 : .04;
+    }
     const bw = w / BANDS;
     for (let b = 0; b < BANDS; b++) {
       smooth[b] += (bands[b] - smooth[b]) * (bands[b] > smooth[b] ? .55 : .18);
@@ -344,11 +350,24 @@ export function initStudio(ctx) {
     return moving;
   }
   let queued = 0;
-  function draw() { if (queued || !onScreen) return; queued = requestAnimationFrame(now => { queued = 0; drawWave(); if (drawSpec(now)) addTask(tick); }); }
+  let lastFrame = -Infinity;
+  let spectrumMoving = false;
+  function draw() {
+    if (queued || !onScreen) return;
+    queued = requestAnimationFrame(now => {
+      queued = 0;
+      drawWave();
+      spectrumMoving = drawSpec(now);
+      if (spectrumMoving) addTask(tick);
+    });
+  }
   function tick(now) {
     if (document.hidden || !onScreen) return false;
-    drawWave(); const m = drawSpec(now);
-    return !!S.playing || S.busy || m;
+    if (mobile && now - lastFrame < 40) return !!S.playing || spectrumMoving;
+    lastFrame = now;
+    if (S.playing) drawWave();
+    spectrumMoving = drawSpec(now);
+    return !!S.playing || animateBusy() || spectrumMoving;
   }
 
   // ------------------------------------------------------------- progress mirror (read-only)
@@ -356,14 +375,19 @@ export function initStudio(ctx) {
   function syncProgress() {
     const pct = clamp(parseFloat(bar?.style.width) || 0, 0, 100);
     const busy = convert?.getAttribute('aria-busy') === 'true' || (wrap && !wrap.classList.contains('hidden') && pct > 0 && pct < 100);
+    if (S.progress !== pct || !ring.hasAttribute('aria-valuenow')) {
+      const rounded = String(Math.round(pct));
+      ringVal.style.strokeDashoffset = String(C * (1 - pct / 100));
+      ringNum.firstChild.textContent = rounded;
+      ring.setAttribute('aria-valuenow', rounded);
+    }
+    const busyChanged = S.busy !== busy;
     S.progress = pct; S.busy = busy;
-    ringVal.style.strokeDashoffset = String(C * (1 - pct / 100));
-    ringNum.firstChild.textContent = String(Math.round(pct));
-    ring.setAttribute('aria-valuenow', String(Math.round(pct)));
     const st = busy ? 'running' : pct >= 100 || S.B?.peaks || S.B?.remote ? 'done' : 'idle';
     if (state.dataset.state !== st) { state.dataset.state = st; state.querySelector('b').textContent = t(st); }
     if (el.dataset.busy !== String(busy)) el.dataset.busy = String(busy);
-    if (busy) addTask(tick);
+    if (animateBusy()) addTask(tick);
+    else if (busyChanged) draw();
   }
   if (bar) new MutationObserver(syncProgress).observe(bar, { attributes: true, attributeFilter: ['style'] });
   if (wrap) new MutationObserver(syncProgress).observe(wrap, { attributes: true, attributeFilter: ['class'] });

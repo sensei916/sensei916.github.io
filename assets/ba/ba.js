@@ -20,20 +20,11 @@
   function isBA() { return root.dataset.ui === "ba"; }
   function valid(n) { return NAMES.indexOf(n) >= 0; }
 
-  /* ---------- 1 · boot: runs synchronously in <head>, after liquid-ui.js (and rococo.js) ---------- */
-  if (get(KEY) === "ba") root.dataset.ui = "ba";
+  /* ---------- 1 · boot ---------- */
+  if (!window.PostPrepThemes && get(KEY) === "ba") root.dataset.ui = "ba";
   var urlSub = (location.search.match(/[?&]ba=(koyuki|hoshino|momoi|kei|shiroko)\b/) || [])[1];
   if (urlSub) put(SUB_KEY, urlSub);
   root.dataset.ba = valid(urlSub) ? urlSub : valid(get(SUB_KEY)) ? get(SUB_KEY) : "koyuki";
-  var script = document.currentScript;
-  if (compact.matches && isBA() && script && /\/(?:index\.html|rvc\.html)?$/.test(location.pathname)) {
-    var preload = document.createElement("link");
-    preload.rel = "preload";
-    preload.as = "image";
-    preload.fetchPriority = "high";
-    preload.href = new URL("img/" + root.dataset.ba + "/portrait-mobile.webp", script.src).href;
-    document.head.appendChild(preload);
-  }
 
   var themeMeta = document.querySelector('meta[name="theme-color"]');
   var themeOriginal = themeMeta && (themeMeta.getAttribute("data-postprep-original") || themeMeta.getAttribute("content"));

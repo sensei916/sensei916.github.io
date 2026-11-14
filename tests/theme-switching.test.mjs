@@ -22,6 +22,7 @@ function fixture(initial, { denyStorage = false, lang = 'zh-CN' } = {}) {
     addEventListener() {},
     createElement() {
       const node = { dataset: {}, attributes: {}, events: {}, setAttribute(k, v) { this.attributes[k] = v; },
+        removeAttribute(k) { delete this.attributes[k]; },
         addEventListener(k, fn) { this.events[k] = fn; } };
       nodes.push(node); return node;
     },

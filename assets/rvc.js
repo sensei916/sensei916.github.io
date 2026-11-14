@@ -4842,7 +4842,7 @@
   // receives one transferred ArrayBuffer, so scrolling the character gallery
   // during a download no longer competes with 20 MB copies, SHA-256 hashing,
   // IndexedDB serialisation and a 360 MB Blob build.
-  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261113-github-move1";
+  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261114-fast1";
   const MODEL_FETCH = { progressMs: 250, probeMs: 7000, connectMs: 12000, inactivityMs: 15000, quietHintMs: 6000 };
   let modelFetchWorker = null;
   let modelFetchBroken = false;
@@ -6666,7 +6666,7 @@
     });
   }
 
-  async function refreshOfficialService() {
+  async function refreshOfficialService(catalogReady) {
     if (state.cloudProbe) return state.cloudProbe;
     state.cloudProbe = (async () => {
       try {
@@ -6676,7 +6676,11 @@
         state.engineReady = status?.ready === true;
         state.engineInfo = state.engineReady ? status : null;
         if (!state.engineReady) return false;
-        const payload = await fetchJsonWithRetry(OFFICIAL_RVC_MODELS_ENDPOINT, CLOUD_MODELS_TIMEOUT_MS);
+        const payload = await fetchJsonWithRetry(OFFICIAL_RVC_MODELS_ENDPOINT, CLOUD_MODELS_TIMEOUT_MS)
+          .catch(error => {
+            console.warn("Cloud RVC model list was unavailable", error);
+            return null;
+          });
         const models = Array.isArray(payload?.models)
           ? payload.models.filter((model) => model && /^[A-Za-z0-9_-]{1,64}$/u.test(String(model.id || "")))
           : [];
@@ -6685,6 +6689,7 @@
           // still convert any bundled model. Keep the cached catalog usable.
           return true;
         }
+        await catalogReady;
         state.catalog = models.map(displayMetadataForRemote);
         if (!state.catalog.some((model) => model.id === state.selectedModelId)) {
           state.selectedModelId = state.catalog[0].id;
@@ -7204,14 +7209,9 @@
     }
   }
 
-  async function initCatalog() {
+  async function loadBundledCatalog() {
     try {
-      renderModelGallery();
-    } catch (e) {
-      console.error("Initial renderModelGallery failed", e);
-    }
-    try {
-      const res = await fetch("assets/rvc-models.json?v=" + Date.now());
+      const res = await fetch("assets/rvc-models.json?v=" + RVC_BUILD);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.models) && data.models.length > 0) {
@@ -7224,11 +7224,12 @@
     } catch (e) {
       console.warn("Failed to load rvc-models.json", e);
     }
-    try {
-      await refreshOfficialService();
-    } catch (e) {
-      console.warn("refreshOfficialService failed", e);
-    }
+  }
+
+  async function initCatalog() {
+    const catalogReady = loadBundledCatalog();
+    const cloudReady = refreshOfficialService(catalogReady);
+    await Promise.all([catalogReady, cloudReady]);
     try {
       await loadOwnModelsFromDB();
     } catch (e) {
@@ -7244,6 +7245,7 @@
     } catch (e) {
       console.warn("applyCharacterPitch failed", e);
     }
+    updateStatusDisplay();
   }
 
   function probeAudioDuration(file) {
@@ -9955,7 +9957,7 @@
   // freeze1: a tab left open (or a browser that keeps an old copy of the page)
   // keeps running an old rvc.js. Compare with the published build and reload
   // once onto a cache-busted URL; never while a conversion is running.
-  const RVC_BUILD = "20261113-github-move1";
+  const RVC_BUILD = "20261114-fast1";
   async function checkRvcBuild({ reason = "boot" } = {}) {
     let remote = "";
     try {
@@ -9993,32 +9995,40 @@
     state.lang = resolveRvcLanguage();
     loadCustomCollections();
     setupEventListeners();
+    const catalogReady = initCatalog();
     applyRvcLanguage();
-    const { initChorus, publishChorusResult } = await import('./rvc-chorus.js?v=20261113-github-move1');
-    chorusController = initChorus({ state, getEndpoint: getOfficialEndpoint, prepareFile: fixUploadContainer,
-      setMode: () => { setInferenceMode('official'); setAudioMode('song'); },
-      createRequestId: createCloudRequestId,
-      setBusy: (value) => { state.busy = value; const button = document.getElementById('rvc-convert'); if (button) button.disabled = value; syncMixControls(); state.syncTtsControls?.(); },
-      onResult: async (next, job) => {
-        const audio = document.getElementById('rvc-result-audio');
-        if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
-        state.resultUrl = next; state.latestSongJob = null; state.resultMetaRender = null; state.resultMetaBaseRender = null;
-        await publishChorusResult({audio,result:document.getElementById('rvc-result'),
-          download:document.getElementById('rvc-result-download'),meta:document.getElementById('rvc-result-meta')},next,job,attachResultAudio);
-      },
-    });
-    await initCatalog();
-    try {
-      const {initModelExport} = await import('./rvc-model-export.js?v=20261016-1');
+    const chorusReady = import('./rvc-chorus.js?v=20261113-github-move1').then(({ initChorus, publishChorusResult }) => {
+      chorusController = initChorus({
+        state, getEndpoint: getOfficialEndpoint, prepareFile: fixUploadContainer,
+        setMode: () => { setInferenceMode('official'); setAudioMode('song'); },
+        createRequestId: createCloudRequestId,
+        setBusy: (value) => {
+          state.busy = value;
+          const button = document.getElementById('rvc-convert');
+          if (button) button.disabled = value;
+          syncMixControls();
+          state.syncTtsControls?.();
+        },
+        onResult: async (next, job) => {
+          const audio = document.getElementById('rvc-result-audio');
+          if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
+          state.resultUrl = next; state.latestSongJob = null; state.resultMetaRender = null; state.resultMetaBaseRender = null;
+          await publishChorusResult({audio,result:document.getElementById('rvc-result'),
+            download:document.getElementById('rvc-result-download'),meta:document.getElementById('rvc-result-meta')},next,job,attachResultAudio);
+        },
+      });
+    }).catch(error => console.warn('Chorus could not initialize', error));
+    const exportReady = import('./rvc-model-export.js?v=20261016-1').then(({ initModelExport }) => {
       state.modelExportController = initModelExport({state,getModel:getSelectedModel,name:voiceName,
         readOwnModel:getCachedItem,cacheKey:characterModelCacheKey,verifyBytes:verifyModelBytes,
         loadModel:(model,onProgress)=>loadModelAuto(model,characterModelCacheKey(model),voiceName(model),'application/onnx',onProgress)});
-    } catch (error) { console.warn('ONNX export could not initialize', error); }
-    const {initRegularAutoParameters}=await import('./rvc-auto-tune.js?v=20261113-github-move1');
-    state.autoParameterController=initRegularAutoParameters({state,getEndpoint:getOfficialEndpoint,getModel:getSelectedModel,
-      prepareFile:fixUploadContainer,isModernSpeech:useNewSpeechEngine,createRequestId:createCloudRequestId,
-      setBusy:value=>{state.busy=value;updateStatusDisplay();syncMixControls();}});
-    chorusController.refresh();
-    applyRvcLanguage();
+    }).catch(error => console.warn('ONNX export could not initialize', error));
+    const tuneReady = import('./rvc-auto-tune.js?v=20261113-github-move1').then(({ initRegularAutoParameters }) => {
+      state.autoParameterController = initRegularAutoParameters({state,getEndpoint:getOfficialEndpoint,getModel:getSelectedModel,
+        prepareFile:fixUploadContainer,isModernSpeech:useNewSpeechEngine,createRequestId:createCloudRequestId,
+        setBusy:value=>{state.busy=value;updateStatusDisplay();syncMixControls();}});
+    }).catch(error => console.warn('Auto parameters could not initialize', error));
+    await Promise.all([catalogReady, chorusReady, exportReady, tuneReady]);
+    updateStatusDisplay();
   });
 })();

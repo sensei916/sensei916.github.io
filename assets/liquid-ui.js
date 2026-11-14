@@ -4,8 +4,75 @@
   const root = document.documentElement;
   const styles = ["glass", "classic", "rococo", "ba"];
   const normalizeStyle = value => styles.includes(value) ? value : "glass";
+  const packs = new Map();
+  const themeMeta = document.querySelector?.('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.setAttribute("data-postprep-original", themeMeta.getAttribute("content"));
   try { root.dataset.ui = normalizeStyle(localStorage.getItem(key)); }
   catch { root.dataset.ui = "glass"; }
+  const scriptUrl = document.currentScript?.src;
+  let portraitPreloaded = false;
+
+  function preloadBaPortrait() {
+    if (portraitPreloaded || !scriptUrl || !matchMedia("(max-width: 760px)").matches ||
+        !/\/(?:index\.html|rvc\.html)?$/.test(location.pathname)) return;
+    const characters = ["koyuki", "hoshino", "momoi", "kei", "shiroko"];
+    const requested = new URLSearchParams(location.search).get("ba");
+    let saved;
+    try { saved = localStorage.getItem("postprep-ba"); } catch { /* Use the default portrait. */ }
+    const character = characters.find(name => name === requested) || characters.find(name => name === saved) || characters[0];
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "image";
+    link.fetchPriority = "high";
+    link.href = new URL(`ba/img/${character}/portrait-mobile.webp`, scriptUrl).href;
+    document.head.append(link);
+    portraitPreloaded = true;
+  }
+  if (root.dataset.ui === "ba") preloadBaPortrait();
+
+  function loadPack(pack, initial = false) {
+    if (pack.loading) return pack.loading;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = pack.css;
+    if (initial) link.setAttribute("blocking", "render");
+    const script = document.createElement("script");
+    script.src = pack.js;
+    const loaded = element => new Promise((resolve, reject) => {
+      element.addEventListener("load", resolve, { once: true });
+      element.addEventListener("error", reject, { once: true });
+    });
+    const cssReady = loaded(link).catch(error => { link.remove(); throw error; });
+    const jsReady = pack.jsReady || loaded(script).catch(error => {
+      pack.jsReady = null;
+      script.remove();
+      throw error;
+    });
+    document.head.append(link);
+    if (!pack.jsReady) {
+      pack.jsReady = jsReady;
+      document.head.append(script);
+    }
+    pack.loading = Promise.allSettled([cssReady, jsReady]).then(results => {
+      pack.ready = results.every(result => result.status === "fulfilled");
+      if (!pack.ready) {
+        link.remove();
+        pack.loading = null;
+      }
+      return pack.ready;
+    });
+    return pack.loading;
+  }
+
+  window.PostPrepThemes = {
+    register(style, css, js) {
+      const pack = { css, js };
+      packs.set(style, pack);
+      if (root.dataset.ui === style) loadPack(pack, true).then(ready => {
+        if (!ready && root.dataset.ui === style) root.dataset.ui = "glass";
+      });
+    },
+  };
 
   function init() {
     const en = () => root.lang.startsWith("en");
@@ -43,18 +110,38 @@
     if (header && typeof ResizeObserver !== "undefined") new ResizeObserver(measureHeader).observe(header);
     measureHeader();
     if (header) new MutationObserver(mountToggle).observe(header, { childList: true, subtree: true });
+    let selection = 0;
+    function selectStyle(style, persist) {
+      const current = ++selection;
+      const apply = () => {
+        root.dataset.ui = style;
+        if (persist) try { localStorage.setItem(key, root.dataset.ui); } catch { /* Session toggle still works. */ }
+        labelToggle();
+        if (style !== "glass") document.getElementById("studio-input-audio")?.pause();
+      };
+      const pack = packs.get(style);
+      if (!pack || pack.ready) {
+        toggle.removeAttribute("aria-busy");
+        apply();
+        return;
+      }
+      toggle.setAttribute("aria-busy", "true");
+      if (style === "ba") preloadBaPortrait();
+      loadPack(pack).then(ready => {
+        if (current !== selection) return;
+        toggle.removeAttribute("aria-busy");
+        if (ready) apply();
+        else {
+          toggle.title = text("主题加载失败，点击重试", "Theme failed to load. Click to retry.");
+          toggle.dataset.tooltip = toggle.title;
+        }
+      });
+    }
     toggle.addEventListener("click", () => {
-      root.dataset.ui = styles[(styles.indexOf(normalizeStyle(root.dataset.ui)) + 1) % styles.length];
-      try { localStorage.setItem(key, root.dataset.ui); } catch { /* Private browsing still allows a session toggle. */ }
-      labelToggle();
-      if (root.dataset.ui !== "glass") document.getElementById("studio-input-audio")?.pause();
+      selectStyle(styles[(styles.indexOf(normalizeStyle(root.dataset.ui)) + 1) % styles.length], true);
     });
     window.addEventListener("storage", (event) => {
-      if (event.key === key) {
-        root.dataset.ui = normalizeStyle(event.newValue);
-        labelToggle();
-        if (root.dataset.ui !== "glass") document.getElementById("studio-input-audio")?.pause();
-      }
+      if (event.key === key) selectStyle(normalizeStyle(event.newValue), false);
     });
     new MutationObserver(labelToggle).observe(root, { attributes: true, attributeFilter: ["lang", "data-ui"] });
     let highlightFrame = 0;
@@ -106,6 +193,14 @@
       ["rvc-pitch", "fa-sliders", "调音", "Tune"],
       ["rvc-result", "fa-wave-square", "结果", "Result"],
     ];
+    let activeStep = 0;
+    function setActiveStep(index) {
+      if (index === activeStep) return;
+      dock.children[activeStep + 1].removeAttribute("aria-current");
+      dock.children[index + 1].setAttribute("aria-current", "step");
+      dock.style.setProperty("--step", String(index));
+      activeStep = index;
+    }
     steps.forEach(([id, icon, zh, english], index) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -121,9 +216,7 @@
           const status = document.getElementById("rvc-service-status");
           if (status) status.textContent = text("先载入音频并完成变声，结果才会显示在这里。", "Load audio and convert it before opening results.");
         }
-        dock.style.setProperty("--step", String(activeStep));
-        dock.querySelectorAll("button").forEach(item => item.removeAttribute("aria-current"));
-        dock.querySelector(`button[data-step="${activeStep}"]`)?.setAttribute("aria-current", "step");
+        setActiveStep(activeStep);
         window.PostPrepStudio?.revealTarget(target);
         target.scrollIntoView({ behavior: reduced.matches ? "instant" : "smooth", block: "center" });
         if (!target.matches("input")) target.tabIndex = -1;
@@ -167,6 +260,7 @@
     let scrollFrame = 0;
     function syncDock() {
       scrollFrame = 0;
+      if (root.dataset.ui !== "glass") return;
       const threshold = (document.getElementById("site-header")?.getBoundingClientRect().height || 72) + 140;
       let active = 0;
       steps.forEach(([id], index) => {
@@ -175,15 +269,12 @@
         const anchor = window.PostPrepStudio?.visibleAnchor(target) || target;
         if (anchor?.getBoundingClientRect().top <= threshold) active = index;
       });
-      dock.style.setProperty("--step", String(active));
-      dock.querySelectorAll("button").forEach((button, index) => {
-        if (index === active) button.setAttribute("aria-current", "step");
-        else button.removeAttribute("aria-current");
-      });
+      setActiveStep(active);
     }
     window.addEventListener("scroll", () => {
-      if (!scrollFrame) scrollFrame = requestAnimationFrame(syncDock);
+      if (!scrollFrame && root.dataset.ui === "glass") scrollFrame = requestAnimationFrame(syncDock);
     }, { passive: true });
+    new MutationObserver(syncDock).observe(root, { attributes: true, attributeFilter: ["data-ui"] });
     syncDock();
     syncDockSpace();
     const canvas = panel.querySelector("canvas");

@@ -3,22 +3,21 @@
 //   node tools/rococo-inject.mjs --remove   remove the block from every page
 //   node tools/rococo-inject.mjs --check    exit 1 if any page is missing the block
 // Only the 11 top-level pages are touched; hoshino/ and community/ are never modified.
-// The block goes right before </head>, i.e. after liquid-ui.js and the v3 block,
-// so rococo.js can restore data-ui="rococo" before first paint.
+// Register the optional pack after the shared theme switcher and the v3 block.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const VER = '20261107-apple1';
+const CSS_VER = '20261107-apple1';
+const JS_VER = '20261114-fast1';
 const PAGES = ['index.html', 'caption-formatter.html', 'hashtag-cleaner.html', 'idea-generator.html',
   'length-checker.html', 'publish-trust.html', 'skills.html', 'skill-passport.html', 'rvc.html',
   'privacy.html', '404.html'];
 const mode = process.argv.includes('--remove') ? 'remove' : process.argv.includes('--check') ? 'check' : 'add';
 const RE = /\n?[ \t]*<!-- rococo:head -->[\s\S]*?<!-- \/rococo:head -->/g;
 const blockFor = pre => `  <!-- rococo:head -->
-  <link rel="stylesheet" href="${pre}assets/rococo/rococo.css?v=${VER}">
-  <script src="${pre}assets/rococo/rococo.js?v=${VER}"></script>
+  <script>window.PostPrepThemes?.register("rococo", "${pre}assets/rococo/rococo.css?v=${CSS_VER}", "${pre}assets/rococo/rococo.js?v=${JS_VER}");</script>
   <!-- /rococo:head -->`;
 
 let missing = 0;

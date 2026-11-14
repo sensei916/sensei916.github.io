@@ -10,15 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const VER = '20261107-ba-apple1';
+const CSS_VER = '20261107-ba-apple1';
+const JS_VER = '20261114-fast1';
 const PAGES = ['index.html', 'caption-formatter.html', 'hashtag-cleaner.html', 'idea-generator.html',
   'length-checker.html', 'publish-trust.html', 'skills.html', 'skill-passport.html', 'rvc.html',
   'privacy.html', '404.html'];
 const mode = process.argv.includes('--remove') ? 'remove' : process.argv.includes('--check') ? 'check' : 'add';
 const RE = /\n?[ \t]*<!-- ba:head -->[\s\S]*?<!-- \/ba:head -->/g;
 const blockFor = pre => `  <!-- ba:head -->
-  <link rel="stylesheet" href="${pre}assets/ba/ba.css?v=${VER}">
-  <script src="${pre}assets/ba/ba.js?v=${VER}"></script>
+  <script>window.PostPrepThemes?.register("ba", "${pre}assets/ba/ba.css?v=${CSS_VER}", "${pre}assets/ba/ba.js?v=${JS_VER}");</script>
   <!-- /ba:head -->`;
 
 let missing = 0;
