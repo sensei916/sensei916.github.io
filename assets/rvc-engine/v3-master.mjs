@@ -201,19 +201,24 @@ export function truePeakLimit(channels, rate, { ceilingDb = -1, lookahead = 0.00
 // mix: Float32Array[] at `rate`; reference: original upload channels (same
 // rate) or null. matchLoudness=false when the user moved the vocal/backing
 // faders or muted a stem (same rule as the cloud path).
-export function masterMix(mix, rate, reference = null, { matchLoudness = true, ceilingDb = -1 } = {}) {
+export function masterMix(mix, rate, reference = null, { matchLoudness = true, ceilingDb = -1, loudnessGainDb } = {}) {
   const report = { revision: V3_MASTER_REVISION, ceilingDb };
   let channels = mix;
+  let gainDb = Number.isFinite(loudnessGainDb) ? loudnessGainDb : 0;
   if (matchLoudness && reference && reference[0]?.length > rate) {
     const target = integratedLufs(reference, rate);
     const current = integratedLufs(mix, rate);
     if (target > -60 && current > -60) {
-      const gainDb = Math.max(-6, Math.min(6, target - current));
-      const g = 10 ** (gainDb / 20);
-      channels = mix.map((c) => { const o = new Float32Array(c.length); for (let i = 0; i < c.length; i += 1) o[i] = c[i] * g; return o; });
-      Object.assign(report, { targetLufs: target, beforeLufs: current, loudnessGainDb: gainDb });
+      gainDb = target - current;
+      Object.assign(report, { targetLufs: target, beforeLufs: current });
     }
   }
+  gainDb = Math.max(-6, Math.min(6, gainDb));
+  if (gainDb !== 0) {
+    const gain = 10 ** (gainDb / 20);
+    channels = mix.map(channel => Float32Array.from(channel, value => value * gain));
+  }
+  if (gainDb !== 0 || Number.isFinite(report.targetLufs)) report.loudnessGainDb = gainDb;
   const limited = truePeakLimit(channels, rate, { ceilingDb });
   report.limiterReducedSamples = limited.reducedSamples;
   report.safetyTrim = limited.safetyTrim;
@@ -234,18 +239,22 @@ export function v3MasterEnabled(scope = globalThis) {
 
 // Main-thread helper: run masterMix in a dedicated module Worker and fall
 // back to the untouched mix on any failure (never lose the user's cover).
-export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl = new URL("./v3-master.worker.js", import.meta.url)) {
+export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl = new URL("./v3-master.worker.js?v=20261114-local2", import.meta.url)) {
   return new Promise((resolve) => {
     let worker;
     let timer = 0;
     let settled = false;
+    const { signal, ...masterOptions } = options || {};
+    const onAbort = () => done({ channels: mix, report: { skipped: "cancelled" } });
     const done = (value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       try { worker?.terminate(); } catch {}
       resolve(value);
     };
+    if (signal?.aborted) { onAbort(); return; }
     try {
       worker = new Worker(workerUrl, { type: "module" });
     } catch (error) {
@@ -255,7 +264,8 @@ export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl 
     // Deadline: a worker that never answers keeps the legacy mix instead of
     // hanging the cover (30 s + 1x the audio duration).
     const seconds = rate > 0 && mix?.[0]?.length ? mix[0].length / rate : 0;
-    const { timeoutMs = 30000 + seconds * 1000, ...workerOptions } = options || {};
+    const { timeoutMs = 30000 + seconds * 1000, ...workerOptions } = masterOptions;
+    signal?.addEventListener("abort", onAbort, { once: true });
     timer = setTimeout(() => done({ channels: mix, report: { skipped: "worker-timeout", timeoutMs } }), timeoutMs);
     worker.onmessage = (event) => {
       const data = event.data || {};
@@ -267,7 +277,11 @@ export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl 
     };
     const copy = mix.map((c) => Float32Array.from(c));
     const ref = reference ? reference.map((c) => Float32Array.from(c)) : null;
-    worker.postMessage({ type: "MASTER", mix: copy, rate, reference: ref, options: workerOptions },
-      [...copy.map((c) => c.buffer), ...(ref ? ref.map((c) => c.buffer) : [])]);
+    try {
+      worker.postMessage({ type: "MASTER", mix: copy, rate, reference: ref, options: workerOptions },
+        [...copy.map((c) => c.buffer), ...(ref ? ref.map((c) => c.buffer) : [])]);
+    } catch (error) {
+      done({ channels: mix, report: { skipped: "worker-post-failed", error: String(error) } });
+    }
   });
 }

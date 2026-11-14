@@ -2,7 +2,7 @@
 // cover fallback. Receives model bytes + 44.1 kHz stereo PCM, returns stems.
 // WebGPU is used when available and verified; otherwise WASM SIMD.
 import * as ort from "./ort126/ort.min.mjs";
-import { separateStereo, MDX_CONFIG } from "./song-separator.mjs";
+import { separateStereo, MDX_CONFIG } from "./song-separator.mjs?v=20261114-local2";
 
 let cancelled = false;
 
@@ -56,7 +56,8 @@ self.onmessage = async (event) => {
   cancelled = false;
   const started = performance.now();
   try {
-    const { modelBytes, left, right, wasmBase, preferWebGPU = true, verifyWebGPU = true } = msg;
+    const { model, left, right, wasmBase, preferWebGPU = true, verifyWebGPU = true } = msg;
+    const modelBytes = await model.arrayBuffer();
     let backend = "wasm";
     let session = null;
     if (preferWebGPU && self.navigator?.gpu) {
@@ -102,6 +103,7 @@ self.onmessage = async (event) => {
       onProgress: (current, total) => post("progress", { current, total, backend }),
       shouldCancel: () => cancelled,
       inPlaceInstrumental: true,
+      overlapSeconds: 0.32,
     });
     try { await session.release(); } catch {}
     post(

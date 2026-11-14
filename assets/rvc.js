@@ -14,9 +14,8 @@
   const LOCAL_MAX_AUDIO_SECONDS = 20;
   const DEVICE_FALLBACK_MAX_AUDIO_SECONDS = 1200;
   // Offline song-cover fallback (separation + RVC + remix on the device).
-  const DEVICE_SONG_MAX_AUDIO_SECONDS = 360;
   const OFFLINE_SONG_FALLBACK_KEY = "rvcOfflineSongFallback";
-  const SONG_SEPARATOR_WORKER_VERSION = "20261030-offline-song-r1";
+  const SONG_SEPARATOR_WORKER_VERSION = "20261114-local2";
   const CLOUD_STATUS_TIMEOUT_MS = 15000;
   const CLOUD_MODELS_TIMEOUT_MS = 20000;
   const CLOUD_STATUS_ATTEMPTS = 2;
@@ -108,9 +107,10 @@
       mixInitial: "调整后点击更新混音，预听与下载会同步更新。短期分轨最多保留约 2 小时。",
       modeTitle: "处理模式",
       modeOfficialTitle: "云端优先",
-      modeOfficialHint: "使用 PyTorch GPU；不可达时，纯人声转到设备端。翻唱需要云端。",
+      modeOfficialHint: "优先使用 PyTorch GPU；兼容角色可在服务不可达时改用设备端。",
       modeLocalTitle: "设备端",
-      modeLocalHint: "在当前浏览器处理纯人声；音频不上传。翻唱仍需要云端。",
+      modeLocalHint: "在当前浏览器处理纯人声或带伴奏翻唱，音频不上传。",
+      localCoverUnavailable: "当前角色或浏览器不支持本机翻唱。请选择支持设备端的公开角色，或切换云端。",
       cacheDefault: "设备端模型保存在浏览器缓存中",
       preload: "预载模型",
       clearCache: "清理缓存",
@@ -128,7 +128,7 @@
       voiceOnly: "纯人声（默认）",
       voiceOnlyHint: "沿用原有稳定链路，上传更省流量。",
       songMode: "带伴奏翻唱",
-      songModeHint: "云端先分离人声，只变人声，再与原伴奏回混。",
+      songModeHint: "先分离人声，只变人声，再与原伴奏回混。",
       ttsTextPlaceholder: "在这里输入你想让角色朗读的文字…（最多 800 字）",
       ttsSynth: "合成朗读",
       ttsConvert: "用当前角色朗读",
@@ -150,7 +150,7 @@
       stallUseCloud: "改用云端",
       stallUseLocal: "改用本机处理",
       stallTitle: "处理已停止",
-      stepAudioHint: "纯人声最长 20 分钟，云端翻唱最长 15 分钟；文件限 25 MB。",
+      stepAudioHint: "本机翻唱支持分段处理长音频。云端翻唱最长 15 分钟，上传限 25 MB。",
       sourceUpload: "上传音频",
       sourceUploadHint: "从设备选择文件。",
       sourceRecord: "录制声音",
@@ -243,9 +243,10 @@
       mixInitial: "Update the mix to refresh both preview and download. Temporary stems are kept for up to about 2 hours.",
       modeTitle: "Processing mode",
       modeOfficialTitle: "Cloud first",
-      modeOfficialHint: "PyTorch GPU inference. Dry vocals fall back to your device if the service is unavailable; covers require cloud.",
+      modeOfficialHint: "Prefer PyTorch GPU inference. Compatible voices can use this device if the service is unavailable.",
       modeLocalTitle: "On device",
-      modeLocalHint: "Process dry vocals in this browser without uploading audio. Covers still require cloud.",
+      modeLocalHint: "Process dry vocals or song covers in this browser without uploading audio.",
+      localCoverUnavailable: "This voice or browser does not support on-device covers. Choose a compatible public voice or use the cloud.",
       cacheDefault: "On-device models are stored in browser cache",
       preload: "Preload models",
       clearCache: "Clear cache",
@@ -263,7 +264,7 @@
       voiceOnly: "Dry vocal (default)",
       voiceOnlyHint: "Uses the established conversion path and uploads less data.",
       songMode: "Song with backing track",
-      songModeHint: "The cloud separates vocals, converts only the voice, then remixes the original backing track.",
+      songModeHint: "Separate vocals, convert the voice, then remix the original backing track.",
       ttsTextPlaceholder: "Enter text for the character to read… (up to 800 characters)",
       ttsSynth: "Generate speech",
       ttsConvert: "Read as selected character",
@@ -285,7 +286,7 @@
       stallUseCloud: "Use cloud",
       stallUseLocal: "Use this device",
       stallTitle: "Processing stopped",
-      stepAudioHint: "Published on-device voices accept 20 minutes of dry vocals; cloud covers accept 15 minutes. Files must be under 25 MB. Prefer MP3/M4A; keep the local page in the foreground with enough memory.",
+      stepAudioHint: "On-device covers process long audio in windows. Cloud covers accept up to 15 minutes and 25 MB per upload.",
       sourceUpload: "Upload audio",
       sourceUploadHint: "Choose an existing audio file from your device.",
       sourceRecord: "Record voice",
@@ -4842,7 +4843,7 @@
   // receives one transferred ArrayBuffer, so scrolling the character gallery
   // during a download no longer competes with 20 MB copies, SHA-256 hashing,
   // IndexedDB serialisation and a 360 MB Blob build.
-  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261114-fast1";
+  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261114-local2";
   const MODEL_FETCH = { progressMs: 250, probeMs: 7000, connectMs: 12000, inactivityMs: 15000, quietHintMs: 6000 };
   let modelFetchWorker = null;
   let modelFetchBroken = false;
@@ -5231,69 +5232,76 @@
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
-  async function decodeAudioFileTo16kMono(file) {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      const numChannels = audioBuffer.numberOfChannels;
-      const length = audioBuffer.length;
-      const sampleRate = audioBuffer.sampleRate;
-
-      // Mixdown to mono float32
-      const mono = new Float32Array(length);
-      for (let c = 0; c < numChannels; c++) {
-        const channelData = audioBuffer.getChannelData(c);
-        for (let i = 0; i < length; i++) {
-          mono[i] += channelData[i] / numChannels;
+  function mixVoiceToMono(audioBuffer) {
+    const channels = audioBuffer.numberOfChannels;
+    const length = audioBuffer.length;
+    if (channels === 1) return audioBuffer.getChannelData(0);
+    if (channels === 2) {
+      const left = audioBuffer.getChannelData(0);
+      const right = audioBuffer.getChannelData(1);
+      let ll = 0, rr = 0, lr = 0, meanL = 0, meanR = 0, count = 0;
+      // Detect substantial cancellation, sampling at audio rate without
+      // scanning every sample of long recordings.
+      const stride = Math.max(1, Math.ceil(length / 64000));
+      for (let start = 0; start < length; start += stride * 32) {
+        const end = Math.min(length, start + 32);
+        for (let i = start; i < end; i++) {
+          const l = left[i], r = right[i];
+          ll += l * l; rr += r * r; lr += l * r;
+          meanL += l; meanR += r; count++;
         }
       }
-
-      // Resample to 16,000 Hz if needed
-      let out16k = mono;
-      if (sampleRate !== 16000) {
-        const offlineCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(
-          1,
-          Math.ceil((length * 16000) / sampleRate),
-          16000
-        );
-        const bufferSource = offlineCtx.createBuffer(1, length, sampleRate);
-        bufferSource.copyToChannel(mono, 0);
-        const sourceNode = offlineCtx.createBufferSource();
-        sourceNode.buffer = bufferSource;
-        sourceNode.connect(offlineCtx.destination);
-        sourceNode.start(0);
-        const resampledBuffer = await offlineCtx.startRendering();
-        out16k = resampledBuffer.getChannelData(0);
+      const energyL = ll - meanL * meanL / count;
+      const energyR = rr - meanR * meanR / count;
+      const covariance = lr - meanL * meanR / count;
+      const strongest = Math.max(energyL, energyR);
+      const monoEnergy = (energyL + energyR + 2 * covariance) / 4;
+      if (covariance < -0.7 * Math.sqrt(energyL * energyR) && monoEnergy < 0.16 * strongest) {
+        return energyL >= energyR ? left : right;
       }
-
-      // Input Peak Normalization & DC Offset Removal to prevent distortion in neural model
-      let mean = 0;
-      for (let i = 0; i < out16k.length; i++) mean += out16k[i];
-      mean /= (out16k.length || 1);
-
-      let inPeak = 0;
-      const clean16k = new Float32Array(out16k.length);
-      for (let i = 0; i < out16k.length; i++) {
-        const sample = out16k[i] - mean;
-        clean16k[i] = sample;
-        const abs = Math.abs(sample);
-        if (abs > inPeak) inPeak = abs;
-      }
-
-      if (inPeak > 0.8) {
-        const inScale = 0.8 / inPeak;
-        for (let i = 0; i < clean16k.length; i++) clean16k[i] *= inScale;
-      }
-
-      return {
-        float32: clean16k,
-        duration: audioBuffer.duration,
-        sampleRate: 16000,
-      };
-    } finally {
-      audioCtx.close().catch(() => {});
     }
+
+    const mono = new Float32Array(length);
+    for (let c = 0; c < channels; c++) {
+      const channelData = audioBuffer.getChannelData(c);
+      for (let i = 0; i < length; i++) mono[i] += channelData[i] / channels;
+    }
+    return mono;
+  }
+
+  async function decodeAudioFileTo16kMono(file) {
+    const sampleRate = 16000;
+    const bytes = await file.arrayBuffer();
+    let audioBuffer;
+    try {
+      audioBuffer = await decodeWithContext(offlineContext(1, 1, sampleRate), bytes);
+    } catch {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const context = new AudioCtx();
+      try {
+        // decodeAudioData detaches its input, so the compatibility path
+        // reads fresh bytes if the offline decoder rejected the file.
+        audioBuffer = await decodeWithContext(context, await file.arrayBuffer());
+      } finally {
+        await context.close().catch(() => {});
+      }
+    }
+
+    const out16k = await resampleMono(mixVoiceToMono(audioBuffer), audioBuffer.sampleRate, sampleRate);
+    let mean = 0;
+    for (const sample of out16k) mean += sample;
+    mean /= out16k.length || 1;
+
+    let peak = 0;
+    for (let i = 0; i < out16k.length; i++) {
+      out16k[i] -= mean;
+      peak = Math.max(peak, Math.abs(out16k[i]));
+    }
+    if (peak > 0.8) {
+      const gain = 0.8 / peak;
+      for (let i = 0; i < out16k.length; i++) out16k[i] *= gain;
+    }
+    return { float32: out16k, duration: audioBuffer.duration, sampleRate };
   }
 
   function getSelectedModel() {
@@ -5310,8 +5318,8 @@
       const value = Number(document.getElementById(id)?.value || 0);
       return Number.isFinite(value) ? Math.max(-24, Math.min(6, value)) : 0;
     };
-    const cloud = state.inferenceMode === "official";
-    const song = cloud && state.audioMode === "song";
+    const song = state.audioMode === "song";
+    const cloud = state.inferenceMode === "official" || song;
     return {
       vocalGainDb: cloud ? db("rvc-vocal-gain") : 0,
       accompanimentGainDb: song ? db("rvc-accompaniment-gain") : 0,
@@ -5385,10 +5393,10 @@
     if (vocalValue) vocalValue.textContent = dbText(controls.vocalGainDb);
     if (backingValue) backingValue.textContent = dbText(controls.accompanimentGainDb);
     const backing = document.getElementById("rvc-accompaniment-track");
-    if (backing) backing.disabled = state.audioMode !== "song" || state.inferenceMode !== "official";
+    if (backing) backing.disabled = state.audioMode !== "song";
     for (const id of ["rvc-vocal-gain", "rvc-vocal-mute"]) {
       const input = document.getElementById(id);
-      if (input) input.disabled = state.inferenceMode !== "official";
+      if (input) input.disabled = state.inferenceMode !== "official" && state.audioMode !== "song";
     }
     const button = document.getElementById("rvc-mix-update");
     if (button) button.disabled = state.busy || state.audioMode !== "song"
@@ -6752,14 +6760,20 @@
     }
 
     const usesBrowserInference = isOwnModel || state.inferenceMode === "local";
-    if (!usesBrowserInference && state.audio.duration > MAX_AUDIO_SECONDS) {
+    const deviceCover = state.audioMode === "song" && canRunDeviceSongCover(selectedModel);
+    if (state.audioMode === "song" && usesBrowserInference && !deviceCover) {
+      if (statusEl) statusEl.textContent = t("localCoverUnavailable");
+      if (convertBtn) convertBtn.disabled = true;
+      return;
+    }
+    if (!usesBrowserInference && !deviceCover && state.audio.duration > MAX_AUDIO_SECONDS) {
       if (statusEl) statusEl.textContent = t("audioTooLong");
       if (convertBtn) convertBtn.disabled = true;
       if (convertLabel) convertLabel.textContent = t("convert");
       return;
     }
     const deviceAudioLimit = isOwnModel ? LOCAL_MAX_AUDIO_SECONDS : DEVICE_FALLBACK_MAX_AUDIO_SECONDS;
-    if (usesBrowserInference && state.audio.duration > deviceAudioLimit) {
+    if (usesBrowserInference && !deviceCover && state.audio.duration > deviceAudioLimit) {
       if (statusEl) statusEl.textContent = state.lang === "en"
         ? isOwnModel
           ? `Imported models currently support clips up to ${LOCAL_MAX_AUDIO_SECONDS} seconds.`
@@ -6773,7 +6787,7 @@
         : "请裁剪音频";
       return;
     }
-    if (!usesBrowserInference && state.audioMode === "song"
+    if (!usesBrowserInference && !deviceCover && state.audioMode === "song"
         && state.engineReady === true && state.engineInfo?.capabilities?.song === false) {
       if (statusEl) statusEl.textContent = state.lang === "en"
         ? "The cloud voice engine is online, but the song separator is not ready. Try again after it is available."
@@ -6787,10 +6801,12 @@
       let engineLabel = state.lang === "en" ? " Voice engine is ready" : " 变声引擎已就绪";
       if (isOwnModel) {
         engineLabel = state.lang === "en" ? " Imported model is ready" : " 专属导入模型已就绪";
+      } else if (deviceCover && (state.inferenceMode === "local" || state.engineReady === false ||
+          state.engineInfo?.capabilities?.song === false || state.audio.duration > MAX_AUDIO_SECONDS ||
+          state.audio.file.size > MAX_AUDIO_BYTES)) {
+        engineLabel = l(" 本机翻唱已就绪", " On-device cover is ready");
       } else if (state.inferenceMode === "official" && state.engineReady === true) {
         engineLabel = state.lang === "en" ? " Cloud RVC engine is ready" : " 云端 RVC 高保真引擎已就绪";
-      } else if (state.inferenceMode === "official" && state.audioMode === "song" && state.engineReady === false && canRunDeviceSongCover(selectedModel)) {
-        engineLabel = state.lang === "en" ? " Cloud engine offline · song covers will run on this device (slower)" : " 电脑端云引擎离线 · 带伴奏翻唱将在本机完成（较慢）";
       } else if (state.inferenceMode === "official") {
         engineLabel = state.lang === "en" ? " Cloud RVC is connecting; this request will retry" : " 云端 RVC 引擎正在连接；本次会直接重试";
       } else {
@@ -6972,11 +6988,6 @@
   }
 
   function setInferenceMode(mode) {
-    if (mode === "local" && state.audioMode === "song") {
-      state.audioMode = "voice";
-      renderAudioMode();
-      showToast(l("本地兼容模式已切回纯人声；带伴奏翻唱使用云端 GPU 分离与回混。","Local compatibility switched to dry vocals. Song covers use cloud GPU separation and remixing."));
-    }
     state.inferenceMode = mode === "local" ? "local" : "official";
     try {
       window.localStorage.setItem(RVC_MODE_STORAGE_KEY, state.inferenceMode);
@@ -7049,7 +7060,10 @@
         ? "min-h-11 rounded-lg border-2 border-brand bg-teal-50 px-3 py-2 text-left text-xs font-bold text-ink shadow-xs"
         : "min-h-11 rounded-lg border-2 border-transparent bg-white px-3 py-2 text-left text-xs font-bold text-ink shadow-xs hover:border-brand/40";
     }
-    if (hint) {
+    if (hint && song && state.inferenceMode === "local") {
+      hint.textContent = l("本机分段分离、变声并回混原伴奏。长录音可用 PCM WAV，处理时请保持页面在前台。",
+        "Separate vocals, convert and remix on this device. Use PCM WAV for long recordings and keep this page open.");
+    } else if (hint) {
       hint.textContent = state.lang === "en"
         ? song
           ? "Song mode keeps the original stereo track: cloud PyMSS separates vocals and accompaniment, RVC converts only the vocal, then remixes to the original duration."
@@ -7060,10 +7074,8 @@
     }
     syncMixControls();
     const mixHint = document.getElementById("rvc-mix-hint");
-    if (mixHint && state.inferenceMode !== "official") {
-      mixHint.textContent = state.lang === "en"
-        ? "This mix panel uses the cloud stems. On-device conversion keeps its original output settings."
-        : "独立混音使用云端分轨；设备端变声沿用原有输出设置。";
+    if (mixHint && state.inferenceMode === "local" && song) {
+      mixHint.textContent = l("开始翻唱前可调整人声和伴奏的音量。", "Set vocal and backing levels before starting the cover.");
     } else if (mixHint && !song) {
       mixHint.textContent = state.lang === "en"
         ? "Dry-vocal mode has no backing stem. Only the vocal level and mute apply."
@@ -7075,9 +7087,6 @@
 
   function setAudioMode(mode) {
     state.audioMode = mode === "song" ? "song" : "voice";
-    if (state.audioMode === "song" && state.inferenceMode !== "official") {
-      setInferenceMode("official");
-    }
     renderAudioMode();
     updateStatusDisplay();
   }
@@ -7307,15 +7316,12 @@
     try {
       // Cloud ffmpeg already validates and decodes this file. Avoid concurrent
       // full-song WebAudio copies on iOS; local inference decodes lazily below.
-      if(state.inferenceMode==='official' && (isAppleMobile() || state.audioMode==='song')) {
+      if(state.audioMode==='song' || (state.inferenceMode==='official' && isAppleMobile())) {
         const duration=Number(fallbackDuration) || await probeAudioDuration(file);
-        if(duration>audioDurationLimit(state.inferenceMode,state.selectedModelId)) {
-          if(statusEl)statusEl.textContent=t('audioTooLong');updateStatusDisplay();return;
-        }
         state.audio={file,float32:null,duration,name:file.name};
         if(statusEl)statusEl.textContent=duration>0
           ? t('analysisReady',{name:file.name,duration:`${duration.toFixed(1)}s`})
-          : `${file.name} · 时长由云端校验，可直接上传`;
+          : l(`${file.name} · 处理时读取时长`, `${file.name} · Duration will be read during processing`);
         updateStatusDisplay();return;
       }
       const decoded = await decodeAudioFileTo16kMono(file);
@@ -7718,14 +7724,7 @@
     window.addEventListener("pagehide", state.cancelRecording);
   }
 
-  async function runWebRvcInference({ allowLong = false, fallback = false } = {}) {
-    // Set only by runDeviceSongCover(): the locally separated vocal plus the
-    // remix step. Consumed once so later dry-vocal runs are unaffected.
-    const songCover = state.pendingDeviceSongCover || null;
-    state.pendingDeviceSongCover = null;
-    const songVocal = songCover?.vocal || null;
-    const finalize = songCover?.finalize || null;
-    const metaSuffix = songCover?.metaSuffix || "";
+  async function runWebRvcInference({ allowLong = false, fallback = false, cover } = {}) {
     if (state.busy || !state.audio || !state.selectedModelId) return false;
     const deviceModel = state.catalog.find((model) => model.id === state.selectedModelId);
     if (deviceModel?.supportsDevice === false) {
@@ -7737,13 +7736,13 @@
       updateProgressBar(2);
     }
 
-    if (state.audioMode !== "voice" && !songVocal) {
+    if (state.audioMode !== "voice" && !cover) {
       const message = "设备端兜底只处理纯人声；带伴奏翻唱仍需要云端 GPU 分离与回混。";
       updateStatusDisplay(message);
       showToast(message);
       return false;
     }
-    if (state.audio.duration > DEVICE_FALLBACK_MAX_AUDIO_SECONDS) {
+    if (!cover && state.audio.duration > DEVICE_FALLBACK_MAX_AUDIO_SECONDS) {
       const message = `设备端兜底最多处理 ${DEVICE_FALLBACK_MAX_AUDIO_SECONDS / 60} 分钟纯人声，请裁剪音频后重试。`;
       updateStatusDisplay(message);
       showToast(message);
@@ -7795,7 +7794,7 @@
       // 1. Dynamic import of rvc-web-runtime
       updateStatusDisplay(l(" 正在初始化本地推理引擎..."," Initializing the on-device engine\u2026"));
       const runtimeModule = await withDeadline(
-        import(new URL("assets/rvc-engine/rvc-web-runtime.js?v=20261104-audio1", window.location.href).href),
+        import(new URL("assets/rvc-engine/rvc-web-runtime.js?v=20261114-local2", window.location.href).href),
         RVC_STALL.importMs,
         stageStall("engine-import", "本地推理引擎脚本 30 秒内没有加载完成（网络或缓存异常）",
           "The on-device engine script did not load within 30s (network or cache problem)", "RVC_ENGINE_IMPORT_STALLED"),
@@ -7825,41 +7824,42 @@
       // Progress callbacks use (loaded, total, ...) bytes; the old parameter
       // name `l` shadowed the language helper and threw when msg was empty.
       const byteShare = (loaded, total, cur, tot) => (total > 0 ? loaded / total : (tot > 0 ? cur / tot : 0));
-      const hubertFile = await loadModelAuto(
+      const modelProgress = percent => updateProgressBar(cover ? percent / 10 : percent);
+      let hubertFile = await loadModelAuto(
         hubertCfg,
         encoder.cacheKey,
         "HuBERT 语义特征模型",
         "application/onnx",
         (loaded, total, cur, tot, fromCache, msg) => {
-          updateProgressBar(5 + Math.min(28, Math.round(byteShare(loaded, total, cur, tot) * 28)));
+          modelProgress(5 + Math.min(28, Math.round(byteShare(loaded, total, cur, tot) * 28)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 HuBERT 语义模型: 分片 ${cur}/${tot}`,` [1/4] Loading HuBERT: chunk ${cur}/${tot}`));
         },
         { signal: runSignal }
       );
-      updateProgressBar(33);
+      modelProgress(33);
 
       updateStatusDisplay(l(" [1/4] 正在加载基础音高模型 (RMVPE)..."," [1/4] Loading the pitch model (RMVPE)\u2026"));
-      const rmvpeFile = await loadModelAuto(
+      let rmvpeFile = await loadModelAuto(
         rmvpeCfg,
         "rmvpe.onnx",
         "RMVPE 音高模型",
         "application/onnx",
         (loaded, total, cur, tot, fromCache, msg) => {
-          updateProgressBar(33 + Math.min(33, Math.round(byteShare(loaded, total, cur, tot) * 33)));
+          modelProgress(33 + Math.min(33, Math.round(byteShare(loaded, total, cur, tot) * 33)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 RMVPE 音高模型: 分片 ${cur}/${tot}`,` [1/4] Loading RMVPE: chunk ${cur}/${tot}`));
         },
         { signal: runSignal }
       );
-      updateProgressBar(66);
+      modelProgress(66);
 
       updateStatusDisplay(l(` [1/4] 正在加载角色声音模型 (${selectedModel.name})...`,` [1/4] Loading character voice (${voiceName(selectedModel)})…`));
-      const modelFile = await loadModelAuto(
+      let modelFile = await loadModelAuto(
         selectedModel,
         characterModelCacheKey(selectedModel),
         selectedModel.name,
         "application/onnx",
         (loaded, total, cur, tot, fromCache, msg) => {
-          updateProgressBar(66 + Math.min(34, Math.round(byteShare(loaded, total, cur, tot) * 34)));
+          modelProgress(66 + Math.min(34, Math.round(byteShare(loaded, total, cur, tot) * 34)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 ${selectedModel.name} 角色模型: 分片 ${cur}/${tot}`,` [1/4] Loading ${voiceName(selectedModel)}: chunk ${cur}/${tot}`));
         },
         { signal: runSignal }
@@ -7884,15 +7884,22 @@
         }
       }
 
+      if (cover) {
+        hubertFile = await reusableModelFile(hubertFile);
+        rmvpeFile = await reusableModelFile(rmvpeFile);
+        modelFile = await reusableModelFile(modelFile);
+      }
       loadingModels = false;
       document.body?.classList.remove("rvc-downloading");
-      updateProgressBar(100);
-      setTimeout(() => showProgressBar(false), 800);
+      if (!cover) {
+        updateProgressBar(100);
+        setTimeout(() => showProgressBar(false), 800);
+      }
       checkCacheStatus();
 
       // Ensure audio float32 buffer is valid (and not detached from any previous operations)
       activeLocalStage = "decode";
-      if (!songVocal && (!state.audio.float32 || state.audio.float32.byteLength === 0)) {
+      if (!cover && (!state.audio.float32 || state.audio.float32.byteLength === 0)) {
         if (state.audio.file) {
           const decoded = await withDeadline(decodeAudioFileTo16kMono(state.audio.file), RVC_STALL.decodeMs,
             stageStall("decode", "音频解码 90 秒内没有完成，请换一个 WAV/MP3 文件重试", "Decoding the audio did not finish within 90s. Retry with a WAV/MP3 file.", "RVC_DECODE_STALLED"),
@@ -7912,18 +7919,16 @@
       }
       // The runtime makes the one transfer copy, leaving the selected input
       // available for retry without an additional full-duration allocation.
-      const freshAudioInput = songVocal || state.audio.float32;
-
       // 3. Run Pipeline in Web Worker. Long fallback jobs use the existing
       // fixed-frame worker windows, but receive a duration-aware deadline so
       // a three-minute phone conversion is not killed by the old 120s cap.
-      const localTimeoutMs = localInferenceTimeoutMs(state.audio.duration, allowLong);
+      const localTimeoutMs = localInferenceTimeoutMs(cover ? 63 : state.audio.duration, allowLong);
       activeLocalStage = "worker";
       state.conversionStallLimitMs = localTimeoutMs + 15000;
       updateStatusDisplay(fallback
         ? " 云端暂时不可达，正在切换到用户设备端分段推理；请保持页面在前台…"
         : " [2/4] 本地 WebAssembly SIMD 推理开始 (完全在您的设备上运行)...");
-      const result = await runPipelineInWorker(
+      const infer = (freshAudioInput, report) => runPipelineInWorker(
         rvc,
         {
           model: modelFile,
@@ -7935,6 +7940,10 @@
         16000,
         {
           onEvent: (e) => {
+            if (report) {
+              report(e);
+              return;
+            }
             if (e.type === "stage") {
               activeLocalStage = e.stage;
               const stageMap = {
@@ -7978,8 +7987,9 @@
           protect: protectVal,
           noiseSeed: Number.isInteger(selectedModel.noiseSeed)
             ? selectedModel.noiseSeed >>> 0
-            : deriveStableNoiseSeed(freshAudioInput, selectedModel.id),
+            : cover ? deriveStableNoiseSeed([], selectedModel.id) : deriveStableNoiseSeed(freshAudioInput, selectedModel.id),
           noiseScale: selectedModel.noiseScale ?? 0.5,
+          ...(cover ? { windowContextDuration: .15 } : {}),
           outputSampleRate: selectedModel.sampleRate || 40000,
           timeout: localTimeoutMs,
           // Healthy WASM inference can exceed the estimate on slower devices.
@@ -7992,22 +8002,15 @@
           signal: runSignal,
         }
       );
-
+      const result = cover
+        ? await cover({ infer, signal: runSignal, setStage: stage => { activeLocalStage = stage; } })
+        : await infer(state.audio.float32);
       const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
       if (!result.outputWav) {
         throw new Error("No output wav generated by pipeline");
       }
-      // Offline song covers remix the converted vocal with the locally
-      // separated accompaniment before anything reaches the player.
-      activeLocalStage = "mix";
-      const finalWav = finalize
-        ? await withDeadline(finalize(result.outputWav), RVC_STALL.mixMs,
-          stageStall("mix", "本机回混伴奏 3 分钟内没有完成", "On-device remixing did not finish within 3 minutes", "RVC_MIX_STALLED"), runSignal)
-        : result.outputWav;
-      const elapsedTotalSec = ((Date.now() - startTime) / 1000).toFixed(1);
-
       // 4. Attach generated audio to UI
-      const outputUrl = URL.createObjectURL(finalWav);
+      const outputUrl = URL.createObjectURL(result.outputWav);
       const previousResultUrl = state.resultUrl;
       if (resultAudio) {
         resultAudio.src = outputUrl;
@@ -8023,9 +8026,10 @@
       if (previousResultUrl) URL.revokeObjectURL(previousResultUrl);
       if (resultMeta) {
         const localBackendLabel = result.backend === "webgpu" ? "ONNX/WebGPU" : "ONNX/WebAssembly";
+        const metaSuffix = cover ? l(" · 本机 MDX 分离与立体声回混", " · On-device MDX separation and stereo remix") : "";
         state.resultMetaRender = () => { resultMeta.textContent = state.lang === "en"
-          ? `Voice: ${voiceName(selectedModel)} · Pitch: ${pitchVal > 0 ? "+" : ""}${pitchVal} · Time: ${finalize ? elapsedTotalSec : elapsedSec}s · On-device ${localBackendLabel}${metaSuffix}`
-          : `角色：${selectedModel.name} · 音高变调：${pitchVal > 0 ? "+" : ""}${pitchVal} · 耗时：${finalize ? elapsedTotalSec : elapsedSec}s · 用户设备端 ${localBackendLabel}${metaSuffix}`; };
+          ? `Voice: ${voiceName(selectedModel)} · Pitch: ${pitchVal > 0 ? "+" : ""}${pitchVal} · Time: ${elapsedSec}s · On-device ${localBackendLabel}${metaSuffix}`
+          : `角色：${selectedModel.name} · 音高变调：${pitchVal > 0 ? "+" : ""}${pitchVal} · 耗时：${elapsedSec}s · 用户设备端 ${localBackendLabel}${metaSuffix}`; };
         state.resultMetaRender();
       }
       if (resultSection) {
@@ -8070,6 +8074,7 @@
         feature_extraction: ["语义特征提取", "feature extraction"],
         pitch_estimation: ["音高分析", "pitch analysis"],
         voice_synthesis: ["分段合成", "segment synthesis"],
+        separation: ["本地人声分离", "on-device vocal separation"],
         post_processing: ["输出处理", "output processing"],
         mix: ["本地回混", "on-device mixing"],
       };
@@ -8108,6 +8113,7 @@
         convertBtn.setAttribute("aria-busy", "false");
       }
       if (convertLabel) convertLabel.textContent = t("convert");
+      if (cover) showProgressBar(false);
     }
   }
 
@@ -8133,7 +8139,7 @@
     return !status && /网络|连接|超时|查询|下载|请求|network|fetch|timeout|connection/i.test(String(error?.message || ""));
   }
 
-  async function runOfficialRvcInference({ allowDeviceFallback = false, endpointCandidates } = {}) {
+  async function runOfficialRvcInference({ allowDeviceFallback = false, allowCoverFallback = false, endpointCandidates } = {}) {
     if (state.busy || !state.audio?.file || !state.selectedModelId) return;
     if (state.audio.duration > MAX_AUDIO_SECONDS) {
       updateStatusDisplay(t("audioTooLong"));
@@ -8483,6 +8489,7 @@
         updateStatusDisplay(l(" 云端 RVC 当前不可达，准备切换到用户设备端推理…"," Cloud RVC is unreachable. Preparing on-device inference\u2026"));
         return { fallback: true, error };
       }
+      if (allowCoverFallback && isDeviceFallbackEligible(error)) return { fallback: true, error };
       const failureMessage = state.cloudSubmission?.accepted
         ? l("本次查询未完成。云端任务已保留，点「重试」继续查询，不会重复上传。", "This check did not finish. Your cloud job is retained; Retry checks it again without uploading twice.")
         : cloudRvcFailureMessage(error);
@@ -8572,29 +8579,24 @@
     }
   }
 
-  // ---- Offline song-cover fallback (docs/rvc-offline-fallback.md) --------
-  // When the home-PC GPU service is unreachable, a song with accompaniment is
-  // separated on this device (UVR MDX-Net Kim_Vocal_2 ONNX, WebGPU or WASM),
-  // the vocal goes through the existing on-device RVC engine, and the result
-  // is remixed with the separated accompaniment. Cloud stays first whenever
-  // it is online. Disable with localStorage rvcOfflineSongFallback=off or
-  // window.POSTPREP_RVC_OFFLINE_SONG = false.
+  // Device covers use MDX separation, RVC and stereo remix. Keep the existing
+  // opt-out for automatic fallback from cloud mode.
   function offlineSongFallbackEnabled() {
     if (window.POSTPREP_RVC_OFFLINE_SONG === false) return false;
-    try {
-      if (window.localStorage.getItem(OFFLINE_SONG_FALLBACK_KEY) === "off") return false;
-    } catch {}
+    if (state.inferenceMode !== "local") {
+      try {
+        if (window.localStorage.getItem(OFFLINE_SONG_FALLBACK_KEY) === "off") return false;
+      } catch {}
+    }
     return typeof Worker === "function" && typeof WebAssembly === "object";
   }
 
   function canRunDeviceSongCover(model) {
     const separator = state.baseModels?.songSeparator;
     return offlineSongFallbackEnabled()
-      && !isAppleMobile()
       && hasDeviceFallbackModel(model)
       && Array.isArray(separator?.chunks) && separator.chunks.length > 0
-      && Boolean(state.audio?.file)
-      && Number(state.audio?.duration || 0) <= DEVICE_SONG_MAX_AUDIO_SECONDS;
+      && Boolean(state.audio?.file);
   }
 
   function decodeWithContext(ctx, bytes) {
@@ -8610,6 +8612,10 @@
     return new Ctx(channels, Math.max(1, length), sampleRate);
   }
 
+  async function reusableModelFile(file) {
+    return file instanceof Blob ? file : new File([await file.arrayBuffer()], file.name, { type: file.type });
+  }
+
   async function resampleMono(samples, fromRate, toRate) {
     if (fromRate === toRate) return samples;
     const ctx = offlineContext(1, Math.round(samples.length * toRate / fromRate), toRate);
@@ -8623,75 +8629,43 @@
     return new Float32Array(rendered.getChannelData(0));
   }
 
-  function encodeStereoWav16(left, right, sampleRate) {
-    const n = left.length;
-    const view = new DataView(new ArrayBuffer(44 + n * 4));
-    const text = (offset, value) => { for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i)); };
-    text(0, "RIFF"); view.setUint32(4, 36 + n * 4, true); text(8, "WAVE");
-    text(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 2, true);
-    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 4, true); view.setUint16(32, 4, true); view.setUint16(34, 16, true);
-    text(36, "data"); view.setUint32(40, n * 4, true);
-    let offset = 44;
-    for (let i = 0; i < n; i += 1) {
-      const a = Math.max(-1, Math.min(1, left[i]));
-      const b = Math.max(-1, Math.min(1, right[i]));
-      view.setInt16(offset, a < 0 ? a * 0x8000 : a * 0x7fff, true);
-      view.setInt16(offset + 2, b < 0 ? b * 0x8000 : b * 0x7fff, true);
-      offset += 4;
-    }
-    return new Blob([view.buffer], { type: "audio/wav" });
-  }
-
-  // Mix the converted vocal (any rate, mono) over the separated accompaniment
-  // with the same gain/mute controls the cloud remix uses. Peaks are scaled,
-  // never clipped.
-  async function mixDeviceSongCover(vocalWav, instrumental, sampleRate, mix, sourceVocals = null) {
+  // Reuse the first measured gain across windows to avoid changes at joins.
+  async function mixDeviceSongCover(vocalWav, instrumental, mix, reference, loudnessGainDb, signal) {
+    const sampleRate = 44100;
     const ctx = offlineContext(1, 1, sampleRate);
     const decoded = await decodeWithContext(ctx, await vocalWav.arrayBuffer());
     const vocal = decoded.getChannelData(0);
-    const n = instrumental[0].length;
-    const gv = mix.vocalMute ? 0 : Math.pow(10, mix.vocalGainDb / 20);
-    const ga = mix.accompanimentMute ? 0 : Math.pow(10, mix.accompanimentGainDb / 20);
-    const left = new Float32Array(n);
-    const right = new Float32Array(n);
+    const [left, right] = instrumental;
+    const gv = mix.vocalMute ? 0 : 10 ** (mix.vocalGainDb / 20);
+    const ga = mix.accompanimentMute ? 0 : 10 ** (mix.accompanimentGainDb / 20);
     let peak = 0;
-    for (let i = 0; i < n; i += 1) {
-      const v = i < vocal.length ? vocal[i] * gv : 0;
-      left[i] = instrumental[0][i] * ga + v;
-      right[i] = instrumental[1][i] * ga + v;
+    for (let i = 0; i < left.length; i++) {
+      const v = (vocal[i] || 0) * gv;
+      left[i] = left[i] * ga + v;
+      right[i] = right[i] * ga + v;
       peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
     }
-    // v3 master (docs/rvc-v3-quality.md): loudness match to the upload +
-    // true-peak limiter, in a Worker; any failure keeps the legacy mix.
     try {
-      const v3 = await import(new URL("assets/rvc-engine/v3-master.mjs?v=20261101-stall1", window.location.href).href);
-      if (v3.v3MasterEnabled(window)) {
-        const untouched = !mix.vocalMute && !mix.accompanimentMute && !mix.vocalGainDb && !mix.accompanimentGainDb;
-        const reference = sourceVocals ? [0, 1].map((c) => {
-          const r = new Float32Array(n);
-          for (let i = 0; i < n; i += 1) r[i] = instrumental[c][i] + (sourceVocals[c][i] || 0);
-          return r;
-        }) : null;
-        const mastered = await v3.masterMixInWorker([left, right], sampleRate, reference,
-          { matchLoudness: untouched && !!reference, ceilingDb: -1 });
-        if (!mastered.report?.skipped) {
-          console.info("[v3-master]", mastered.report);
-          return encodeStereoWav16(mastered.channels[0], mastered.channels[1], sampleRate);
-        }
+      const master = await import(new URL("assets/rvc-engine/v3-master.mjs?v=20261114-local2", window.location.href).href);
+      if (master.v3MasterEnabled(window)) {
+        const result = await master.masterMixInWorker([left, right], sampleRate, reference,
+          { matchLoudness: !!reference, loudnessGainDb, ceilingDb: -1, signal });
+        if (!result.report?.skipped) return result;
       }
     } catch (error) {
       console.warn("[v3-master] skipped:", error);
     }
-    if (peak > 0.98) {
-      const scale = 0.98 / peak;
-      for (let i = 0; i < n; i += 1) { left[i] *= scale; right[i] *= scale; }
+    signal.throwIfAborted();
+    const gain = Math.min(10 ** ((loudnessGainDb ?? 0) / 20), 10 ** (-1 / 20) / (peak || 1));
+    if (gain !== 1) {
+      for (let i = 0; i < left.length; i++) { left[i] *= gain; right[i] *= gain; }
     }
-    return encodeStereoWav16(left, right, sampleRate);
+    return { channels: [left, right] };
   }
 
   // No-progress watchdog: the separator posts progress per window; silence
   // for RVC_STALL.separatorNoProgressMs (or an abort) terminates the worker.
-  function runSongSeparationWorker(modelBytes, left, right, signal, onMessage) {
+  function runSongSeparationWorker(model, left, right, signal, onMessage) {
     return new Promise((resolve, reject) => {
       const worker = new Worker(
         new URL(`assets/rvc-engine/separator.worker.js?v=${SONG_SEPARATOR_WORKER_VERSION}`, window.location.href),
@@ -8727,104 +8701,112 @@
         else onMessage?.(message);
       };
       worker.onerror = (event) => finish(new Error(event?.message || "separator worker failed"));
-      worker.postMessage({
-        type: "separate",
-        modelBytes,
-        left,
-        right,
-        wasmBase: new URL("assets/rvc-engine/ort126/", window.location.href).href,
-      }, [modelBytes, left.buffer, right.buffer]);
+      worker.onmessageerror = () => finish(new Error("Unreadable separator output"));
+      try {
+        worker.postMessage({
+          type: "separate", model, left, right,
+          wasmBase: new URL("assets/rvc-engine/ort126/", window.location.href).href,
+        }, [left.buffer, right.buffer]);
+      } catch (error) { finish(error); }
     });
+  }
+
+  async function renderDeviceSong({ infer, signal, setStage }, file, mix) {
+    setStage("separation");
+    const { COVER_RATE, openPcmWave, renderCoverWindows } = await import(
+      new URL("assets/rvc-engine/device-cover.mjs?v=20261114-local2", window.location.href).href
+    );
+    updateStatusDisplay(l(" 正在加载本地人声分离模型…", " Loading the on-device vocal separator…"));
+    const model = await reusableModelFile(await loadModelAuto(state.baseModels.songSeparator, "song-separator-kim-vocal-2.onnx",
+      l("人声分离模型", "Vocal separator"), "application/onnx",
+      (loaded, total, current, count, fromCache, message) => { if (message) updateStatusDisplay(message); }, { signal }));
+
+    setStage("decode");
+    updateStatusDisplay(l(" 正在读取歌曲…", " Reading the song…"));
+    let source = await openPcmWave(file);
+    if (!source) {
+      const ctx = offlineContext(2, 1, COVER_RATE);
+      const decoded = await withDeadline(file.arrayBuffer().then(bytes => decodeWithContext(ctx, bytes)),
+        RVC_STALL.decodeMs, () => new RvcStallError("decode", "解码歌曲超时", "Song decoding timed out"), signal);
+      source = {
+        length: decoded.length,
+        read: (from, to) => ({
+          left: decoded.getChannelData(0).slice(from, to),
+          right: decoded.getChannelData(decoded.numberOfChannels > 1 ? 1 : 0).slice(from, to),
+          rate: decoded.sampleRate,
+        }),
+      };
+    }
+
+    let current, count, backend, loudnessGainDb;
+    const matchLoudness = !mix.vocalMute && !mix.accompanimentMute && !mix.vocalGainDb && !mix.accompanimentGainDb;
+    const progress = (phase, fraction = 0) => {
+      updateProgressBar(Math.min(99, 10 + 90 * (current - 1 + fraction) / count));
+      updateStatusDisplay(l(` 本机翻唱 ${current}/${count} · ${phase[0]}`, ` On-device cover ${current}/${count} · ${phase[1]}`));
+    };
+    const outputWav = await renderCoverWindows(source.length, async (from, to) => {
+      setStage("separation");
+      let { left, right, rate } = await source.read(from, to);
+      if (rate !== COVER_RATE) {
+        [left, right] = await Promise.all([resampleMono(left, rate, COVER_RATE), resampleMono(right, rate, COVER_RATE)]);
+        const fit = samples => {
+          if (samples.length >= to - from) return samples.subarray(0, to - from);
+          const padded = new Float32Array(to - from);
+          padded.set(samples);
+          return padded;
+        };
+        left = fit(left);
+        right = fit(right);
+      }
+      const reference = matchLoudness && loudnessGainDb === undefined ? [left.slice(), right.slice()] : null;
+      const { vocals, instrumental } = await runSongSeparationWorker(model, left, right, signal, message => {
+        if (message.type === "progress") progress(
+          [`分离人声 ${message.current}/${message.total}`, `Separating vocals ${message.current}/${message.total}`],
+          .35 * message.current / message.total);
+        else if (message.type === "stage") progress(["正在分离人声", "Separating vocals"]);
+      });
+
+      const mono = mixVoiceToMono({ numberOfChannels: 2, length: vocals[0].length, getChannelData: index => vocals[index] });
+      const vocal = await resampleMono(mono, COVER_RATE, 16000);
+      setStage("voice_synthesis");
+      progress(["转换人声", "Converting vocals"], .35);
+      const result = await infer(vocal, event => {
+        if (event.type === "pitch_analysis") {
+          progress([`分析音高 ${event.current}`, `Analyzing pitch ${event.current}`], .35);
+        } else if (event.type === "chunk") {
+          progress([`转换人声 ${event.current}/${event.total}`, `Converting vocals ${event.current}/${event.total}`],
+            .35 + .55 * event.current / event.total);
+        }
+      });
+      backend = result.backend;
+      setStage("mix");
+      progress(["立体声回混", "Remixing stereo"], .93);
+      const mastered = await mixDeviceSongCover(result.outputWav, instrumental, mix, reference, loudnessGainDb, signal);
+      if (loudnessGainDb === undefined && Number.isFinite(mastered.report?.targetLufs)) {
+        loudnessGainDb = mastered.report.loudnessGainDb;
+      }
+      return mastered.channels;
+    }, {
+      signal,
+      onWindow(index, total) {
+        current = index;
+        count = total;
+        progress(["准备片段", "Preparing window"]);
+      },
+    });
+    updateProgressBar(100);
+    return { outputWav, backend };
   }
 
   async function runDeviceSongCover() {
     if (state.busy || !state.audio?.file) return false;
-    const selectedModel = state.catalog.find((model) => model.id === state.selectedModelId);
-    const convertBtn = document.getElementById("rvc-convert");
-    const mix = selectedMixControls();
-    const started = Date.now();
-    let separation;
-    state.busy = true;
-    if (convertBtn) { convertBtn.disabled = true; convertBtn.setAttribute("aria-busy", "true"); }
-    showProgressBar(true);
-    updateProgressBar(1);
-    try {
-      updateStatusDisplay(l(
-        " 电脑端云引擎离线，正在本机完成带伴奏翻唱：[1/3] 下载人声分离模型（首次约 67MB，之后走缓存）…",
-        " Cloud engine is offline. Covering on this device: [1/3] downloading the separator (about 67 MB the first time)…",
-      ));
-      const songController = new AbortController();
-      state.localRunController = songController;
-      const modelFile = await loadModelAuto(
-        state.baseModels.songSeparator,
-        "song-separator-kim-vocal-2.onnx",
-        l("人声分离模型","Vocal separator"),
-        "application/onnx",
-        (loaded, total, current, count, fromCache, msg) => {
-          updateProgressBar(1 + Math.min(9, Math.round((total > 0 ? loaded / total : current / Math.max(1, count)) * 9)));
-          if (msg) updateStatusDisplay(msg);
-        },
-        { signal: songController.signal },
-      );
-      const modelBytes = await modelFile.arrayBuffer();
-      updateStatusDisplay(l(" [2/3] 正在本机解码歌曲…"," [2/3] Decoding the song on this device…"));
-      const ctx = offlineContext(2, 1, 44100);
-      const decoded = await decodeWithContext(ctx, await state.audio.file.arrayBuffer());
-      const left = new Float32Array(decoded.getChannelData(0));
-      const right = decoded.numberOfChannels > 1 ? new Float32Array(decoded.getChannelData(1)) : new Float32Array(left);
-      const sampleRate = decoded.sampleRate;
-      separation = await runSongSeparationWorker(modelBytes, left, right, songController.signal, (message) => {
-        if (message.type === "progress") {
-          updateProgressBar(10 + Math.round((message.current / Math.max(1, message.total)) * 50));
-          updateStatusDisplay(l(
-            ` [2/3] 本机分离人声与伴奏（${message.backend === "webgpu" ? "WebGPU" : "WebAssembly"}）：${message.current}/${message.total}，请保持页面在前台…`,
-            ` [2/3] Separating vocals on this device (${message.backend === "webgpu" ? "WebGPU" : "WebAssembly"}): ${message.current}/${message.total}. Keep this page open…`,
-          ));
-        } else if (message.type === "stage" && message.stage === "verify") {
-          updateStatusDisplay(l(" [2/3] 正在校验本机 GPU 计算结果…"," [2/3] Verifying GPU output on this device…"));
-        }
-      });
-      const { vocals, instrumental } = separation;
-      const monoVocal = new Float32Array(vocals[0].length);
-      for (let i = 0; i < monoVocal.length; i += 1) monoVocal[i] = 0.5 * (vocals[0][i] + vocals[1][i]);
-      const vocal16k = await resampleMono(monoVocal, sampleRate, 16000);
-      updateProgressBar(60);
-      updateStatusDisplay(l(" [3/3] 人声已分离，正在本机变声并回混原伴奏…"," [3/3] Vocals separated. Converting the voice and remixing on this device…"));
-      const separationSeconds = ((Date.now() - started) / 1000).toFixed(0);
-      const backendLabel = separation.backend === "webgpu" ? "WebGPU" : "WASM";
-      state.busy = false;
-      state.pendingDeviceSongCover = {
-        vocal: vocal16k,
-        finalize: (wav) => mixDeviceSongCover(wav, instrumental, sampleRate, mix, vocals),
-        metaSuffix: l(
-          ` · 电脑离线兜底：本机 MDX 分离（${backendLabel}，${separationSeconds}s）+ 原伴奏回混`,
-          ` · Offline fallback: on-device MDX separation (${backendLabel}, ${separationSeconds}s) + backing remix`,
-        ),
-      };
-      return await runWebRvcInference({ allowLong: true, fallback: true });
-    } catch (error) {
-      console.error("Device song cover failed:", error);
-      if (error?.stalled) {
-        showProgressBar(false);
-        reportConversionStall(error, { mode: "local" });
-        return false;
-      }
-      const message = l(
-        "本机带伴奏翻唱失败（设备内存或算力不足时常见）；请稍后电脑端云引擎上线再试，或裁剪成更短的片段。",
-        "On-device song cover failed (usually memory or compute limits). Try again when the cloud engine is back, or use a shorter clip.",
-      );
-      showToast(message);
-      updateStatusDisplay(` ${message}`);
-      showProgressBar(false);
-      showStallActions({ mode: "local", reasonZh: message, reasonEn: message });
+    if (!canRunDeviceSongCover(getSelectedModel())) {
+      showToast(t("localCoverUnavailable"));
       return false;
-    } finally {
-      if (separation === undefined || state.busy) state.localRunController = null;
-      if (separation === undefined || state.busy) {
-        state.busy = false;
-        if (convertBtn) { convertBtn.disabled = false; convertBtn.setAttribute("aria-busy", "false"); }
-      }
     }
+    const file = state.audio.file;
+    const mix = selectedMixControls();
+    return runWebRvcInference({ allowLong: true, cover: context => renderDeviceSong(context, file, mix) });
   }
 
   async function runRvcInference() {
@@ -8836,6 +8818,7 @@
       return runWebRvcInference();
     }
     if (state.inferenceMode === "local") {
+      if (state.audioMode === "song") return runDeviceSongCover();
       return runWebRvcInference({ allowLong: true });
     }
     if (!isAppleMobile() && state.audioMode === "voice" && hasDeviceFallbackModel(selectedModel) && state.engineReady !== true) {
@@ -8851,11 +8834,17 @@
     }
     // Song covers: cloud first; only when the home-PC engine is unreachable
     // does the cover run fully on this device.
+    if (state.audioMode === "song" && canRunDeviceSongCover(selectedModel)) {
+      if (state.audio.duration > MAX_AUDIO_SECONDS || state.audio.file.size > MAX_AUDIO_BYTES ||
+          state.engineInfo?.capabilities?.song === false) return runDeviceSongCover();
+    }
     if (state.audioMode === "song" && state.engineReady !== true && canRunDeviceSongCover(selectedModel)) {
       const cloudReady = await quickCloudProbe();
       if (cloudReady !== true) return runDeviceSongCover();
     }
-    const cloudResult = await runOfficialRvcInference({ allowDeviceFallback: !isAppleMobile() });
+    const cloudResult = await runOfficialRvcInference({ allowDeviceFallback: !isAppleMobile(),
+      allowCoverFallback: state.audioMode === "song" && canRunDeviceSongCover(selectedModel),
+    });
     if (cloudResult?.fallback && state.audioMode === "song" && canRunDeviceSongCover(selectedModel)) {
       return runDeviceSongCover();
     }
@@ -9957,7 +9946,7 @@
   // freeze1: a tab left open (or a browser that keeps an old copy of the page)
   // keeps running an old rvc.js. Compare with the published build and reload
   // once onto a cache-busted URL; never while a conversion is running.
-  const RVC_BUILD = "20261114-fast1";
+  const RVC_BUILD = "20261114-local2";
   async function checkRvcBuild({ reason = "boot" } = {}) {
     let remote = "";
     try {

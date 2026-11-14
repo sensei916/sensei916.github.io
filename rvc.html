@@ -121,7 +121,7 @@
                 </span>
                 <i id="rvc-mode-official-check" class="fa-solid fa-circle-check text-brand text-base"></i>
               </div>
-              <p class="mt-2 text-xs leading-5 text-muted" data-rvc-i18n="modeOfficialHint">使用 GPU 转换；不可达时，纯人声转到设备端。翻唱需要云端。</p>
+              <p class="mt-2 text-xs leading-5 text-muted" data-rvc-i18n="modeOfficialHint">优先使用 GPU；兼容角色可在服务不可达时改用设备端。</p>
             </button>
 
             <!-- 模式 2: 极速免上传模式 -->
@@ -132,7 +132,7 @@
                 </span>
                 <i id="rvc-mode-local-check" class="fa-regular fa-circle text-zinc-300 text-base"></i>
               </div>
-              <p class="mt-2 text-xs leading-5 text-muted" data-rvc-i18n="modeLocalHint">在浏览器处理纯人声，音频不上传。翻唱仍需要云端。</p>
+              <p class="mt-2 text-xs leading-5 text-muted" data-rvc-i18n="modeLocalHint">在浏览器处理纯人声或带伴奏翻唱，音频不上传。</p>
             </button>
           </div>
 
@@ -280,7 +280,7 @@
         <!-- Step 2: 你的声音（三个并列输入源：上传 / 录制 / 文本朗读→角色） -->
         <div class="rvc-step rvc-step-input mt-7 border-t border-line pt-6">
           <p class="text-sm font-bold" id="rvc-step-audio-label" data-rvc-i18n="stepAudio">2. 提供你的声音（任选其一）</p>
-          <p class="mt-1 text-xs leading-5 text-muted" data-rvc-i18n="stepAudioHint">纯人声最长 20 分钟，云端翻唱最长 15 分钟；文件限 25 MB。</p>
+          <p class="mt-1 text-xs leading-5 text-muted" data-rvc-i18n="stepAudioHint">本机翻唱支持分段处理长音频。云端翻唱最长 15 分钟，上传限 25 MB。</p>
           <div class="studio-sources mt-3 grid gap-3 sm:grid-cols-3" role="group" aria-labelledby="rvc-step-audio-label">
             <button id="rvc-source-upload" type="button" class="min-h-24 rounded-lg border border-brand bg-teal-50 p-4 text-left shadow-sm transition focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2" aria-pressed="true">
               <span class="flex items-center gap-3"><i class="fa-solid fa-upload text-brand" aria-hidden="true"></i><span class="font-black" data-rvc-i18n="sourceUpload">上传音频</span></span>
@@ -604,6 +604,6 @@
   <script src="assets/postprep.js?v=20261113-github-move1"></script>
   <script src="assets/rvc-language.js?v=20261004-chorus-2"></script>
   <script src="assets/rvc-schools.js?v=20261004-chorus-2"></script>
-  <script src="assets/rvc.js?v=20261114-fast1"></script>
+  <script src="assets/rvc.js?v=20261114-local2"></script>
 </body>
 </html>

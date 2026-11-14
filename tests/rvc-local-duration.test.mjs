@@ -17,6 +17,18 @@ function readFunction(name) {
 const limit = Function(`const LOCAL_MAX_AUDIO_SECONDS=20, DEVICE_FALLBACK_MAX_AUDIO_SECONDS=1200, MAX_AUDIO_SECONDS=900; return (${readFunction("audioDurationLimit")});`)();
 const timeout = Function(`return (${readFunction("localInferenceTimeoutMs")});`)();
 
+test("voice downmix recovers stereo cancellation and keeps ordinary stereo balanced", () => {
+  const mix = Function(`return (${readFunction("mixVoiceToMono")});`)();
+  const left = Float32Array.from({ length: 16000 }, (_, i) => .3 * Math.sin(i * .17));
+  const mixStereo = right => mix({ numberOfChannels: 2, length: left.length,
+    getChannelData: channel => channel ? right : left });
+  assert.equal(mixStereo(Float32Array.from(left, value => -value)), left);
+  const louder = Float32Array.from(left, value => -1.2 * value);
+  assert.equal(mixStereo(louder), louder);
+  const right = Float32Array.from(left, value => value / 2);
+  assert.ok(Math.abs(mixStereo(right)[71] - left[71] * .75) < 1e-7);
+});
+
 test("20-minute local input does not expand cloud or unverified imported-model limits", () => {
   assert.equal(limit("local", "hoshino"), 1200);
   assert.equal(1200 <= limit("local", "hoshino"), true);
@@ -27,7 +39,7 @@ test("20-minute local input does not expand cloud or unverified imported-model l
   assert.equal(limit("local", "own:custom"), 20);
   assert.match(client, /decoded\.duration > audioDurationLimit\(state\.inferenceMode, state\.selectedModelId\)/u);
   assert.match(client, /safeFallbackDuration > audioDurationLimit\(state\.inferenceMode, state\.selectedModelId\)/u);
-  assert.match(client, /if \(!usesBrowserInference && state\.audio\.duration > MAX_AUDIO_SECONDS\)/u);
+  assert.match(client, /if \(!usesBrowserInference && !deviceCover && state\.audio\.duration > MAX_AUDIO_SECONDS\)/u);
   assert.match(client, /async function runOfficialRvcInference[\s\S]*?if \(state\.audio\.duration > MAX_AUDIO_SECONDS\)[\s\S]*?return;/u);
 });
 

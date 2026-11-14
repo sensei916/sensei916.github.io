@@ -12501,29 +12501,43 @@ const RMVPE_PARAMS = {
   threshold: 0.03
   // Default threshold for voicing detection
 };
+let rmvpeSpectrogramPlan;
 function computeMelSpectrogram(audio) {
   const { nMels, nFft, hopLength, sampleRate, fMin, fMax } = RMVPE_PARAMS;
+  if (!rmvpeSpectrogramPlan) {
+    const hann = Float64Array.from({ length: nFft }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / nFft));
+    const filters = createMelFilterbank(nFft, nMels, sampleRate, fMin, fMax).map(weights => {
+      const start = weights.findIndex(weight => weight !== 0);
+      if (start < 0) return { start: 0, weights: weights.subarray(0, 0) };
+      let end = weights.length;
+      while (weights[end - 1] === 0) end--;
+      return { start, weights: weights.subarray(start, end) };
+    });
+    rmvpeSpectrogramPlan = { hann, filters };
+  }
+  const { hann, filters } = rmvpeSpectrogramPlan;
   const pad = nFft >> 1;
   const padded = new Float32Array(audio.length + nFft);
   padded.set(audio, pad);
   // torch.stft(center=True) uses reflect padding: mirror the edges.
   for (let i = 1; i <= pad; i++) {
-    padded[pad - i] = audio[i];
-    padded[pad + audio.length - 1 + i] = audio[audio.length - 1 - i];
+    padded[pad - i] = audio[i] ?? 0;
+    padded[pad + audio.length - 1 + i] = audio[audio.length - 1 - i] ?? 0;
   }
   const numFrames = 1 + Math.floor(audio.length / hopLength);
   const melSpec = new Float32Array(numFrames * nMels);
-  const melFilterbank = createMelFilterbank(nFft, nMels, sampleRate, fMin, fMax);
+  const frameData = new Float32Array(nFft);
+  const complex = new Float32Array(nFft * 2);
+  const magnitudes = new Float32Array((nFft >> 1) + 1);
   for (let frame = 0; frame < numFrames; frame++) {
     const start = frame * hopLength;
-    const windowed = applyHannWindow(padded, start, nFft);
-    const magnitudes = computeMagnitudesFFT(windowed);
-    const melFrame = frame * nMels;
+    for (let i = 0; i < nFft; i++) frameData[i] = padded[start + i] * hann[i];
+    computeMagnitudesFFT(frameData, complex, magnitudes);
     for (let mel = 0; mel < nMels; mel++) {
       let sum = 0;
-      const filter = melFilterbank[mel];
-      for (let i = 0; i < filter.length; i++) {
-        sum += magnitudes[i] * filter[i];
+      const filter = filters[mel];
+      for (let i = 0; i < filter.weights.length; i++) {
+        sum += magnitudes[filter.start + i] * filter.weights[i];
       }
       melSpec[mel * numFrames + frame] = Math.log(Math.max(1e-5, sum));
     }
@@ -12571,24 +12585,8 @@ function createMelFilterbank(nFft, nMels, sampleRate, fMin, fMax) {
   }
   return filterbank;
 }
-function applyHannWindow(audio, start, nFft) {
-  const windowed = new Float32Array(nFft);
-  const audioLen = audio.length;
-  for (let i = 0; i < nFft; i++) {
-    const audioIdx = start + i;
-    if (audioIdx < audioLen) {
-      const hann = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / nFft);
-      windowed[i] = audio[audioIdx] * hann;
-    } else {
-      windowed[i] = 0;
-    }
-  }
-  return windowed;
-}
-function computeMagnitudesFFT(frame) {
+function computeMagnitudesFFT(frame, complex, magnitudes) {
   const n = frame.length;
-  const nHalf = Math.floor(n / 2) + 1;
-  const complex = new Float32Array(n * 2);
   for (let i = 0; i < n; i++) {
     complex[i * 2] = frame[i];
     complex[i * 2 + 1] = 0;
@@ -12638,13 +12636,11 @@ function computeMagnitudesFFT(frame) {
       }
     }
   }
-  const magnitudes = new Float32Array(nHalf);
-  for (let i = 0; i < nHalf; i++) {
+  for (let i = 0; i < magnitudes.length; i++) {
     const real = complex[i * 2];
     const imag = complex[i * 2 + 1];
     magnitudes[i] = Math.sqrt(real * real + imag * imag);
   }
-  return magnitudes;
 }
 function decodeSalienceToF0(salience, frameCount, threshold, classFirst = false) {
   const { nClass, centsPerBin, centsOffset } = RMVPE_PARAMS;

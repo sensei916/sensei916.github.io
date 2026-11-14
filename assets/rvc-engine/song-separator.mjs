@@ -239,7 +239,9 @@ export function createMdxDsp(config = MDX_CONFIG) {
 // Memory-lean: no padded copy of the song is made (phones). With
 // `inPlaceInstrumental` the input arrays are overwritten with the
 // instrumental (mix - vocals) instead of allocating two more tracks.
-export async function separateStereo(left, right, runModel, { config = MDX_CONFIG, onProgress, shouldCancel, inPlaceInstrumental = false } = {}) {
+export async function separateStereo(left, right, runModel, {
+  config = MDX_CONFIG, onProgress, shouldCancel, inPlaceInstrumental = false, overlapSeconds = 0,
+} = {}) {
   const dsp = createMdxDsp(config);
   const { chunk, trim, gen } = dsp;
   const n = left.length;
@@ -254,11 +256,13 @@ export async function separateStereo(left, right, runModel, { config = MDX_CONFI
     }
   };
   const vocals = [new Float32Array(n), new Float32Array(n)];
-  const steps = Math.max(1, Math.ceil(n / gen));
+  const overlap = Math.max(0, Math.min(gen - 1, Math.round(overlapSeconds * config.sampleRate)));
+  const stride = gen - overlap;
+  const steps = Math.max(1, 1 + Math.ceil((n - gen) / stride));
   const dims = [1, 4, config.dimF, config.dimT];
   let written = 0;
-  let step = 0;
-  for (let i = 0; written < n; i += gen) {
+  for (let step = 0; step < steps; step += 1) {
+    const i = step * stride;
     if (shouldCancel?.()) throw new Error("SEPARATION_CANCELLED");
     fill(segL, left, i);
     fill(segR, R, i);
@@ -266,14 +270,15 @@ export async function separateStereo(left, right, runModel, { config = MDX_CONFI
     const spec = dsp.stft(seg);
     const pred = await runModel(spec, dims);
     const [yl, yr] = dsp.istft(pred, 2);
-    const take = Math.min(gen, n - written);
+    const take = Math.min(gen, n - i);
+    const shared = Math.max(0, written - i);
     for (let k = 0; k < take; k += 1) {
-      vocals[0][written + k] = yl[trim + k] * config.compensate;
-      vocals[1][written + k] = yr[trim + k] * config.compensate;
+      const blend = k < shared ? 0.5 - 0.5 * Math.cos(Math.PI * (k + 1) / (shared + 1)) : 1;
+      vocals[0][i + k] = vocals[0][i + k] * (1 - blend) + yl[trim + k] * config.compensate * blend;
+      vocals[1][i + k] = vocals[1][i + k] * (1 - blend) + yr[trim + k] * config.compensate * blend;
     }
-    written += Math.max(0, take);
-    step += 1;
-    onProgress?.(step, steps);
+    written = i + take;
+    onProgress?.(step + 1, steps);
   }
   const sameInput = !right || right === left;
   const instrumental = inPlaceInstrumental && !sameInput

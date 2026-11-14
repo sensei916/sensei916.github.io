@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { COVER_RATE, openPcmWave, renderCoverWindows } from "../assets/rvc-engine/device-cover.mjs";
 import {
   createRealFFT,
   createMdxDsp,
@@ -81,7 +82,7 @@ test("separator model chunks are published with integrity hashes", () => {
   if (present === separator.chunks.length) assert.equal(whole.digest("hex"), separator.sha256);
 });
 
-test("rvc.js keeps cloud first and only falls back for song covers when the engine is offline", () => {
+test("song covers can be selected directly on-device, including files past cloud limits", () => {
   const source = read("assets/rvc.js");
   assert.match(source, /async function runDeviceSongCover\(/u);
   assert.match(source, /OFFLINE_SONG_FALLBACK_KEY = "rvcOfflineSongFallback"/u);
@@ -92,10 +93,43 @@ test("rvc.js keeps cloud first and only falls back for song covers when the engi
   assert.ok(probe > 0 && cloud > probe, "offline probe precedes the cloud call");
   assert.match(routing, /if \(cloudReady !== true\) return runDeviceSongCover\(\);/u);
   assert.match(routing, /cloudResult\?\.fallback && state\.audioMode === "song" && canRunDeviceSongCover/u);
-  // Apple mobile keeps the existing no-device-fallback policy.
-  const gate = source.slice(source.indexOf("function canRunDeviceSongCover"), source.indexOf("function decodeWithContext"));
-  assert.match(gate, /!isAppleMobile\(\)/u);
-  assert.match(gate, /DEVICE_SONG_MAX_AUDIO_SECONDS/u);
+  assert.match(routing, /if \(state\.inferenceMode === "local"\) \{\s+if \(state\.audioMode === "song"\) return runDeviceSongCover\(\);/u);
+  assert.doesNotMatch(source, /DEVICE_SONG_MAX_AUDIO_SECONDS/u);
+});
+
+test("cover windows keep exact stereo length and crossfade overlapping samples", async () => {
+  const frames = Math.round(COVER_RATE * .35);
+  const windows = [];
+  const wav = await renderCoverWindows(frames, (from, to) => {
+    const level = .2 * windows.length;
+    return [new Float32Array(to - from).fill(level), new Float32Array(to - from).fill(-level)];
+  }, { windowSeconds: .1, onWindow: (index, total) => windows.push([index, total]) });
+  assert.deepEqual(windows, [[1, 4], [2, 4], [3, 4], [4, 4]]);
+  assert.equal(wav.size, 44 + frames * 4);
+  const reader = await openPcmWave(wav);
+  assert.equal(reader.length, frames);
+  const join = COVER_RATE / 10;
+  const { left, right } = await reader.read(join - 1, join + 3000);
+  assert.ok(Math.abs(left[0] - left[1]) < 1e-4);
+  assert.ok(Math.abs(left[2500] - .4) < 1e-4);
+  assert.ok(Math.abs(left[1200] + right[1200]) < 1e-4);
+});
+
+test("overlapped MDX windows maintain length and the sum of the two stems", async () => {
+  const config = { ...MDX_CONFIG, nFft: 32, hop: 8, dimF: 17, dimT: 9, sampleRate: 100 };
+  const left = Float32Array.from({ length: 128 }, (_, i) => .5 * Math.sin(i / 5));
+  const right = Float32Array.from(left, value => value * .6);
+  let calls = 0;
+  const { vocals, instrumental } = await separateStereo(left, right, async spec => {
+    calls++;
+    return spec;
+  }, { config, overlapSeconds: .08 });
+  assert.ok(calls > 2);
+  assert.equal(vocals[0].length, left.length);
+  for (let i = 0; i < left.length; i++) {
+    assert.ok(Math.abs(vocals[0][i] - left[i] * config.compensate) < 1e-5);
+    assert.ok(Math.abs(vocals[1][i] + instrumental[1][i] - right[i]) < 1e-6);
+  }
 });
 
 test("separator worker uses the bundled onnxruntime build and verifies WebGPU output", () => {
