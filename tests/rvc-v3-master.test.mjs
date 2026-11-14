@@ -56,6 +56,6 @@ test("v3 master is opt-out and runs in a module worker", async () => {
   assert.equal(v3MasterEnabled({ localStorage: { getItem: () => "0" } }), false);
   assert.equal(v3MasterEnabled({ location: { href: "https://x.test/rvc.html?v3master=0" } }), false);
   const worker = await readFile(new URL("../assets/rvc-engine/v3-master.worker.js", import.meta.url), "utf8");
-  assert.match(worker, /import \{ masterMix \} from "\.\/v3-master\.mjs\?v=20261114-local2"/u);
+  assert.match(worker, /import \{ masterMix \} from "\.\/v3-master\.mjs\?v=20261114-mobile3"/u);
   assert.match(worker, /postMessage\(\{ ok: true, channels, report \}, channels\.map/u);
 });

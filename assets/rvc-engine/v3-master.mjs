@@ -49,18 +49,22 @@ export function integratedLufs(channels, rate) {
   const block = Math.round(rate * 0.4);
   const step = Math.round(rate * 0.1);
   if (n < block) return -70;
-  const weighted = channels.map((c) => kWeight(c, rate));
-  // prefix sums of squared samples per channel -> O(n) block energies
-  const energies = [];
-  const prefix = weighted.map((w) => {
-    const p = new Float64Array(w.length + 1);
-    for (let i = 0; i < w.length; i += 1) p[i + 1] = p[i] + w[i] * w[i];
-    return p;
-  });
-  for (let s = 0; s + block <= n; s += step) {
-    let e = 0;
-    for (const p of prefix) e += (p[s + block] - p[s]) / block;
-    energies.push(e);
+  const energies = new Float64Array(1 + Math.floor((n - block) / step));
+  // Store the exact prefix sums only at loudness block boundaries.
+  const starts = new Float64Array(energies.length);
+  for (const channel of channels) {
+    const weighted = kWeight(channel, rate);
+    let sum = 0, start = 0, end = 0;
+    starts[0] = 0;
+    for (let i = 1; end < energies.length; i++) {
+      const sample = weighted[i - 1];
+      sum += sample * sample;
+      if (i === (start + 1) * step && start + 1 < energies.length) starts[++start] = sum;
+      if (i === end * step + block) {
+        energies[end] += (sum - starts[end]) / block;
+        end++;
+      }
+    }
   }
   const loud = (e) => -0.691 + 10 * Math.log10(e + 1e-15);
   const abs = energies.filter((e) => loud(e) > -70);
@@ -122,7 +126,10 @@ export function oversampledPeaks(channels, skipBelow = 0) {
 }
 
 export function truePeakDb(channels, skipBelow = 0) {
-  const p = oversampledPeaks(channels, skipBelow);
+  return truePeakDbFromValues(oversampledPeaks(channels, skipBelow));
+}
+
+function truePeakDbFromValues(p) {
   let m = 0;
   for (let i = 0; i < p.length; i += 1) if (p[i] > m) m = p[i];
   return 20 * Math.log10(Math.max(m, 1e-12));
@@ -151,15 +158,12 @@ export function truePeakLimit(channels, rate, { ceilingDb = -1, lookahead = 0.00
   const ceiling = 10 ** (ceilingDb / 20);
   const skip = ceiling * 0.5;
   const peak = oversampledPeaks(channels, skip);
-  const needed = new Float64Array(n);
-  let anyCut = false;
-  for (let i = 0; i < n; i += 1) {
-    needed[i] = Math.min(1, ceiling / Math.max(peak[i], 1e-12));
-    if (needed[i] < 1) anyCut = true;
-  }
-  let out = channels.map((c) => Float32Array.from(c));
+  const anyCut = peak.some(value => value > ceiling);
+  const out = channels.map((c) => Float32Array.from(c));
   let reduced = 0;
   if (anyCut) {
+    const needed = peak;
+    for (let i = 0; i < n; i++) needed[i] = Math.min(1, ceiling / Math.max(needed[i], 1e-12));
     const la = Math.max(1, Math.round(rate * lookahead));
     const held = runningMin(needed, la);
     const g = new Float64Array(n);
@@ -189,13 +193,15 @@ export function truePeakLimit(channels, rate, { ceilingDb = -1, lookahead = 0.00
       for (const c of out) c[i] *= gi;
     }
   }
-  const tp = 10 ** (truePeakDb(out, skip) / 20);
+  const beforeTrimDb = anyCut ? truePeakDb(out, skip) : truePeakDbFromValues(peak);
+  const tp = 10 ** (beforeTrimDb / 20);
   let trim = 1;
   if (tp > ceiling) {
     trim = (ceiling * 0.998) / tp;
     for (const c of out) for (let i = 0; i < n; i += 1) c[i] *= trim;
   }
-  return { channels: out, reducedSamples: reduced, safetyTrim: trim };
+  return { channels: out, reducedSamples: reduced, safetyTrim: trim,
+    truePeakDb: trim === 1 ? beforeTrimDb : truePeakDb(out, skip) };
 }
 
 // mix: Float32Array[] at `rate`; reference: original upload channels (same
@@ -223,7 +229,7 @@ export function masterMix(mix, rate, reference = null, { matchLoudness = true, c
   report.limiterReducedSamples = limited.reducedSamples;
   report.safetyTrim = limited.safetyTrim;
   report.afterLufs = integratedLufs(limited.channels, rate);
-  report.truePeakDb = truePeakDb(limited.channels, 10 ** (ceilingDb / 20) * 0.5);
+  report.truePeakDb = limited.truePeakDb;
   return { channels: limited.channels, report };
 }
 
@@ -239,7 +245,7 @@ export function v3MasterEnabled(scope = globalThis) {
 
 // Main-thread helper: run masterMix in a dedicated module Worker and fall
 // back to the untouched mix on any failure (never lose the user's cover).
-export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl = new URL("./v3-master.worker.js?v=20261114-local2", import.meta.url)) {
+export function masterMixInWorker(mix, rate, reference, options = {}, workerUrl = new URL("./v3-master.worker.js?v=20261114-mobile3", import.meta.url)) {
   return new Promise((resolve) => {
     let worker;
     let timer = 0;

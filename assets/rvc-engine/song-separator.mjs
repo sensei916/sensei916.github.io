@@ -42,46 +42,63 @@ export function createComplexFFT(n) {
   const tRe = new Float64Array(8);
   const tIm = new Float64Array(8);
 
-  function rec(inRe, inIm, inOff, stride, outRe, outIm, outOff, size, fi) {
-    if (size === 1) {
-      outRe[outOff] = inRe[inOff];
-      outIm[outOff] = inIm[inOff];
-      return;
+  const inputOrder = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    let remaining = i;
+    let size = n;
+    let stride = 1;
+    for (const radix of factors) {
+      size /= radix;
+      inputOrder[i] += Math.floor(remaining / size) * stride;
+      remaining %= size;
+      stride *= radix;
     }
-    const p = factors[fi];
-    const m = size / p;
-    for (let q = 0; q < p; q += 1) {
-      rec(inRe, inIm, inOff + q * stride, stride * p, outRe, outIm, outOff + q * m, m, fi + 1);
-    }
-    const step = n / size;
-    const stepP = n / p;
-    for (let k = 0; k < m; k += 1) {
-      for (let q = 0; q < p; q += 1) {
-        const idx = outOff + q * m + k;
-        const tw = (q * k * step) % n;
-        const a = outRe[idx];
-        const b = outIm[idx];
-        tRe[q] = a * cos[tw] - b * sin[tw];
-        tIm[q] = a * sin[tw] + b * cos[tw];
-      }
-      for (let u = 0; u < p; u += 1) {
-        let sr = 0;
-        let si = 0;
-        for (let q = 0; q < p; q += 1) {
-          const tw = (q * u * stepP) % n;
-          sr += tRe[q] * cos[tw] - tIm[q] * sin[tw];
-          si += tRe[q] * sin[tw] + tIm[q] * cos[tw];
-        }
-        outRe[outOff + u * m + k] = sr;
-        outIm[outOff + u * m + k] = si;
-      }
-    }
+  }
+  // Each stage combines disjoint blocks. Keep the original butterfly
+  // arithmetic and summation order while removing per-frame recursion.
+  const stages = [];
+  let size = 1;
+  for (const p of [...factors].reverse()) {
+    const m = size;
+    size *= p;
+    const roots = Uint32Array.from({ length: p * p }, (_, i) =>
+      ((i % p) * Math.floor(i / p) * (n / p)) % n);
+    stages.push({ p, m, size, step: n / size, roots });
   }
 
   return {
     size: n,
     forward(inRe, inIm, outRe, outIm) {
-      rec(inRe, inIm, 0, 1, outRe, outIm, 0, n, 0);
+      for (let i = 0; i < n; i++) {
+        const source = inputOrder[i];
+        outRe[i] = inRe[source];
+        outIm[i] = inIm[source];
+      }
+      for (const { p, m, size, step, roots } of stages) {
+        for (let block = 0; block < n; block += size) {
+          for (let k = 0; k < m; k++) {
+            const base = block + k;
+            const phase = k * step;
+            for (let q = 0; q < p; q++) {
+              const idx = base + q * m;
+              const tw = q * phase;
+              const a = outRe[idx], b = outIm[idx];
+              tRe[q] = a * cos[tw] - b * sin[tw];
+              tIm[q] = a * sin[tw] + b * cos[tw];
+            }
+            for (let u = 0; u < p; u++) {
+              let sr = 0, si = 0;
+              for (let q = 0; q < p; q++) {
+                const tw = roots[u * p + q];
+                sr += tRe[q] * cos[tw] - tIm[q] * sin[tw];
+                si += tRe[q] * sin[tw] + tIm[q] * cos[tw];
+              }
+              outRe[base + u * m] = sr;
+              outIm[base + u * m] = si;
+            }
+          }
+        }
+      }
     },
   };
 }
@@ -130,12 +147,11 @@ export function createRealFFT(N) {
     },
     // re/im: bins [0, nBins), bins >= nBins are zero. Writes N samples to out.
     inverse(re, im, nBins, out) {
-      const get = (k, which) => (k < nBins ? (which ? im[k] : re[k]) : 0);
       for (let k = 0; k < M; k += 1) {
-        const xr = get(k, 0);
-        const xi = get(k, 1);
-        const yr = get(M - k, 0);
-        const yi = -get(M - k, 1);
+        const xr = k < nBins ? re[k] : 0;
+        const xi = k < nBins ? im[k] : 0;
+        const yr = M - k < nBins ? re[M - k] : 0;
+        const yi = -(M - k < nBins ? im[M - k] : 0);
         const fer = 0.5 * (xr + yr);
         const fei = 0.5 * (xi + yi);
         const dr = 0.5 * (xr - yr);
@@ -250,10 +266,11 @@ export async function separateStereo(left, right, runModel, {
   const segL = new Float64Array(chunk);
   const segR = new Float64Array(chunk);
   const fill = (dst, srcArr, start) => {
-    for (let k = 0; k < chunk; k += 1) {
-      const j = start + k - trim;
-      dst[k] = j >= 0 && j < n ? srcArr[j] : 0;
-    }
+    const from = start - trim;
+    const begin = Math.max(0, from);
+    const end = Math.min(n, from + chunk);
+    dst.fill(0);
+    dst.set(srcArr.subarray(begin, end), begin - from);
   };
   const vocals = [new Float32Array(n), new Float32Array(n)];
   const overlap = Math.max(0, Math.min(gen - 1, Math.round(overlapSeconds * config.sampleRate)));

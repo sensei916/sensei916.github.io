@@ -118,20 +118,28 @@ async function probeMirrors(job, urls) {
   const controllers = urls.map(() => new AbortController());
   const onCancel = () => controllers.forEach((c) => c.abort());
   job.cancelHooks.add(onCancel);
+  let graceTimer;
+  let stopProbing;
+  const grace = new Promise(resolve => { stopProbing = resolve; });
   try {
-    await Promise.all(urls.map((url, i) => deadline((async () => {
+    const probes = Promise.all(urls.map((url, i) => (async () => {
       try {
         const resp = await fetch(url, { signal: controllers[i].signal, cache: "no-store" });
         results[i] = resp.ok
           ? { ok: true, ms: Date.now() - started }
           : { ok: false, ms: Infinity, error: `HTTP ${resp.status}` };
+        // Leave a short window to rank other responsive mirrors, without
+        // paying the full probe deadline for each unreachable host.
+        if (resp.ok && !graceTimer) graceTimer = setTimeout(stopProbing, 240);
       } catch (error) {
         results[i] = { ok: false, ms: Infinity, error: error?.name === "AbortError" ? "timeout" : (error?.message || "network error") };
       } finally {
         controllers[i].abort();
       }
-    })(), job.probeMs, undefined)));
+    })()));
+    await deadline(Promise.race([probes, grace]), job.probeMs, undefined);
   } finally {
+    clearTimeout(graceTimer);
     controllers.forEach((c) => c.abort());
     job.cancelHooks.delete(onCancel);
   }
@@ -214,6 +222,7 @@ async function runJob(job, m) {
         const buffer = await whole.arrayBuffer();
         if (await verified(buffer, m.sha256)) {
           if (!m.returnBytes) return { size: buffer.byteLength, fromCache: true };
+          if (m.returnBlob) return { size: whole.size, fromCache: true, blob: whole };
           return { size: buffer.byteLength, fromCache: true, buffer };
         }
       } catch {}
@@ -226,7 +235,7 @@ async function runJob(job, m) {
   // (peak memory ~= one model, not two or three copies).
   const total = Number(m.totalSize) || 0;
   const parts = m.returnBytes ? new Array(count) : null;
-  let target = m.returnBytes && total > 0 ? new Uint8Array(total) : null;
+  let target = m.returnBytes && !m.returnBlob && total > 0 ? new Uint8Array(total) : null;
   let nominal = 0;
   const inTarget = new Set();
   const flush = () => {
@@ -342,6 +351,10 @@ async function runJob(job, m) {
   for (let i = 0; i < count; i++) size += bytesByChunk[i];
   await idbPut(cfg, `ready:${m.name}`, { size, chunks: count, at: Date.now() });
   if (!m.returnBytes) return { size, fromCache: false };
+  if (m.returnBlob) {
+    const source = target && inTarget.size === count ? [target.buffer] : parts;
+    return { size, blob: new Blob(source, { type: "application/onnx" }) };
+  }
   if (target && inTarget.size === count) return { size, buffer: target.buffer };
   if (count === 1 && parts[0]) return { size, buffer: parts[0] };
   const out = new Uint8Array(size);
@@ -378,7 +391,7 @@ self.onmessage = async (event) => {
   try {
     const result = await runJob(job, m);
     if (result.buffer) post(job, { type: "done", size: result.size, fromCache: !!result.fromCache, buffer: result.buffer }, [result.buffer]);
-    else post(job, { type: "done", size: result.size, fromCache: !!result.fromCache });
+    else post(job, { type: "done", size: result.size, fromCache: !!result.fromCache, blob: result.blob });
   } catch (error) {
     post(job, { type: "error", code: error?.code || (error?.name === "AbortError" ? "ABORTED" : "RVC_MODEL_FETCH_FAILED"), message: error?.message || String(error) });
   } finally {

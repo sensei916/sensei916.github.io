@@ -3,7 +3,7 @@ const DEFAULT_ORT_CDN_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${"1.
 function createRVC(config = {}) {
   const rawAsset = config.assetBaseUrl ?? DEFAULT_CDN_BASE;
   const assetBaseUrl = rawAsset.endsWith("/") ? rawAsset : `${rawAsset}/`;
-  const workerUrl = `${assetBaseUrl}inference.worker.js?v=20261114-local2`;
+  const workerUrl = `${assetBaseUrl}inference.worker.js?v=20261114-mobile3`;
   const rawWasm = config.wasmBaseUrl ?? DEFAULT_ORT_CDN_BASE;
   const wasmBaseUrl = typeof rawWasm === "string"
     ? (rawWasm.endsWith("/") ? rawWasm : `${rawWasm}/`)
@@ -57,7 +57,8 @@ async function createWorkerUrl(workerScriptUrl, signal, fetchTimeout = 0) {
   return URL.createObjectURL(blob);
 }
 async function runPipelineInWorker(ctx, files, audioData, audioSampleRate, callbacks = {}, options = {}) {
-  const { timeout = 3e5, maxTotalTimeout = timeout, startupTimeout = 0, fetchTimeout = 0, signal, ...pipelineOptions } = options;
+  const { timeout = 3e5, maxTotalTimeout = timeout, startupTimeout = 0, fetchTimeout = 0, signal,
+    transferAudio = false, ...pipelineOptions } = options;
   // Blobs are structured-cloned without first materializing every model on
   // the main thread. The worker loads them one at a time, reducing the peak
   // memory that can terminate mobile browsers during long conversions.
@@ -167,14 +168,13 @@ async function runPipelineInWorker(ctx, files, audioData, audioSampleRate, callb
     };
     worker.onmessageerror = () => finish(new RvcError("WORKER_MESSAGE_ERROR", "Inference worker returned unreadable data"));
 
-    // Clone audio buffer for transfer to ensure caller's audio buffer is NEVER detached
+    // The per-window cover buffer is disposable. Selected dry vocals stay
+    // attached so a retry can reuse them.
     let audioPayload = audioData;
     let audioBuf = null;
     if (audioData instanceof Float32Array) {
-      const copy = new Float32Array(audioData.length);
-      copy.set(audioData);
-      audioPayload = copy;
-      audioBuf = copy.buffer;
+      audioPayload = transferAudio && audioData.buffer instanceof ArrayBuffer ? audioData : new Float32Array(audioData);
+      audioBuf = audioPayload.buffer;
     } else if (audioData?.buffer instanceof ArrayBuffer) {
       const copyBuf = audioData.buffer.slice(0);
       audioPayload = new Float32Array(copyBuf);

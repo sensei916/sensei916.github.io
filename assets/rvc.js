@@ -15,7 +15,7 @@
   const DEVICE_FALLBACK_MAX_AUDIO_SECONDS = 1200;
   // Offline song-cover fallback (separation + RVC + remix on the device).
   const OFFLINE_SONG_FALLBACK_KEY = "rvcOfflineSongFallback";
-  const SONG_SEPARATOR_WORKER_VERSION = "20261114-local2";
+  const SONG_SEPARATOR_WORKER_VERSION = "20261114-mobile3";
   const CLOUD_STATUS_TIMEOUT_MS = 15000;
   const CLOUD_MODELS_TIMEOUT_MS = 20000;
   const CLOUD_STATUS_ATTEMPTS = 2;
@@ -4843,7 +4843,7 @@
   // receives one transferred ArrayBuffer, so scrolling the character gallery
   // during a download no longer competes with 20 MB copies, SHA-256 hashing,
   // IndexedDB serialisation and a 360 MB Blob build.
-  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261114-local2";
+  const MODEL_FETCH_WORKER_URL = "assets/rvc-engine/model-fetch.worker.js?v=20261114-mobile3";
   const MODEL_FETCH = { progressMs: 250, probeMs: 7000, connectMs: 12000, inactivityMs: 15000, quietHintMs: 6000 };
   let modelFetchWorker = null;
   let modelFetchBroken = false;
@@ -4986,6 +4986,10 @@
               ? l(` ${displayName} 已从本地闪存就绪`, ` ${displayName} loaded from local storage`)
               : l(` [1/4] ${displayName} 下载完成（${mb(size)}MB），已存入本地缓存`, ` [1/4] ${displayName} downloaded (${mb(size)} MB) and saved locally`));
           }
+          if (msg.blob instanceof Blob) {
+            finish(resolve, new File([msg.blob], name, { type: mimeType }));
+            return;
+          }
           finish(resolve, {
             name, size, type: mimeType, fromCache: Boolean(msg.fromCache),
             async arrayBuffer() {
@@ -5017,7 +5021,7 @@
       try {
         worker.postMessage({
           type: "load", id, name, chunks, sha256: integrity?.sha256 || "", totalSize: declaredTotal,
-          checkWhole: options.checkWhole !== false, returnBytes,
+          checkWhole: options.checkWhole !== false, returnBytes, returnBlob: options.returnBlob === true,
           concurrency: activeModelDownloadConcurrency,
           progressMs: MODEL_FETCH.progressMs, probeMs: MODEL_FETCH.probeMs,
           connectMs: MODEL_FETCH.connectMs, inactivityMs: MODEL_FETCH.inactivityMs,
@@ -5052,7 +5056,7 @@
     if (fetchChunks) {
       try {
         return await fetchChunkedModelInWorker(fetchChunks, name, displayName || name, mimeType, onProgress, modelConfig,
-          { signal, checkWhole: true, returnBytes: options.returnBytes !== false });
+          { signal, checkWhole: true, returnBytes: options.returnBytes !== false, returnBlob: options.returnBlob });
       } catch (error) {
         if (!error?.workerUnavailable) throw error;
         console.warn("Model worker unavailable; downloading on the page thread:", error);
@@ -7794,7 +7798,7 @@
       // 1. Dynamic import of rvc-web-runtime
       updateStatusDisplay(l(" 正在初始化本地推理引擎..."," Initializing the on-device engine\u2026"));
       const runtimeModule = await withDeadline(
-        import(new URL("assets/rvc-engine/rvc-web-runtime.js?v=20261114-local2", window.location.href).href),
+        import(new URL("assets/rvc-engine/rvc-web-runtime.js?v=20261114-mobile3", window.location.href).href),
         RVC_STALL.importMs,
         stageStall("engine-import", "本地推理引擎脚本 30 秒内没有加载完成（网络或缓存异常）",
           "The on-device engine script did not load within 30s (network or cache problem)", "RVC_ENGINE_IMPORT_STALLED"),
@@ -7825,6 +7829,7 @@
       // name `l` shadowed the language helper and threw when msg was empty.
       const byteShare = (loaded, total, cur, tot) => (total > 0 ? loaded / total : (tot > 0 ? cur / tot : 0));
       const modelProgress = percent => updateProgressBar(cover ? percent / 10 : percent);
+      const modelOptions = { signal: runSignal, returnBlob: Boolean(cover) };
       let hubertFile = await loadModelAuto(
         hubertCfg,
         encoder.cacheKey,
@@ -7834,7 +7839,7 @@
           modelProgress(5 + Math.min(28, Math.round(byteShare(loaded, total, cur, tot) * 28)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 HuBERT 语义模型: 分片 ${cur}/${tot}`,` [1/4] Loading HuBERT: chunk ${cur}/${tot}`));
         },
-        { signal: runSignal }
+        modelOptions
       );
       modelProgress(33);
 
@@ -7848,7 +7853,7 @@
           modelProgress(33 + Math.min(33, Math.round(byteShare(loaded, total, cur, tot) * 33)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 RMVPE 音高模型: 分片 ${cur}/${tot}`,` [1/4] Loading RMVPE: chunk ${cur}/${tot}`));
         },
-        { signal: runSignal }
+        modelOptions
       );
       modelProgress(66);
 
@@ -7862,7 +7867,7 @@
           modelProgress(66 + Math.min(34, Math.round(byteShare(loaded, total, cur, tot) * 34)));
           updateStatusDisplay(msg || l(` [1/4] 正在加载 ${selectedModel.name} 角色模型: 分片 ${cur}/${tot}`,` [1/4] Loading ${voiceName(selectedModel)}: chunk ${cur}/${tot}`));
         },
-        { signal: runSignal }
+        modelOptions
       );
 
       let retrievalFile;
@@ -7989,7 +7994,7 @@
             ? selectedModel.noiseSeed >>> 0
             : cover ? deriveStableNoiseSeed([], selectedModel.id) : deriveStableNoiseSeed(freshAudioInput, selectedModel.id),
           noiseScale: selectedModel.noiseScale ?? 0.5,
-          ...(cover ? { windowContextDuration: .15 } : {}),
+          ...(cover ? { windowContextDuration: .15, transferAudio: true, wavOnly: true } : {}),
           outputSampleRate: selectedModel.sampleRate || 40000,
           timeout: localTimeoutMs,
           // Healthy WASM inference can exceed the estimate on slower devices.
@@ -8646,7 +8651,7 @@
       peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
     }
     try {
-      const master = await import(new URL("assets/rvc-engine/v3-master.mjs?v=20261114-local2", window.location.href).href);
+      const master = await import(new URL("assets/rvc-engine/v3-master.mjs?v=20261114-mobile3", window.location.href).href);
       if (master.v3MasterEnabled(window)) {
         const result = await master.masterMixInWorker([left, right], sampleRate, reference,
           { matchLoudness: !!reference, loudnessGainDb, ceilingDb: -1, signal });
@@ -8719,7 +8724,8 @@
     updateStatusDisplay(l(" 正在加载本地人声分离模型…", " Loading the on-device vocal separator…"));
     const model = await reusableModelFile(await loadModelAuto(state.baseModels.songSeparator, "song-separator-kim-vocal-2.onnx",
       l("人声分离模型", "Vocal separator"), "application/onnx",
-      (loaded, total, current, count, fromCache, message) => { if (message) updateStatusDisplay(message); }, { signal }));
+      (loaded, total, current, count, fromCache, message) => { if (message) updateStatusDisplay(message); },
+      { signal, returnBlob: true }));
 
     setStage("decode");
     updateStatusDisplay(l(" 正在读取歌曲…", " Reading the song…"));
@@ -9946,7 +9952,7 @@
   // freeze1: a tab left open (or a browser that keeps an old copy of the page)
   // keeps running an old rvc.js. Compare with the published build and reload
   // once onto a cache-busted URL; never while a conversion is running.
-  const RVC_BUILD = "20261114-local2";
+  const RVC_BUILD = "20261114-mobile3";
   async function checkRvcBuild({ reason = "boot" } = {}) {
     let remote = "";
     try {

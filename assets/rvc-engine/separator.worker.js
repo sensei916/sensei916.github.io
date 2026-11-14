@@ -2,7 +2,7 @@
 // cover fallback. Receives model bytes + 44.1 kHz stereo PCM, returns stems.
 // WebGPU is used when available and verified; otherwise WASM SIMD.
 import * as ort from "./ort126/ort.min.mjs";
-import { separateStereo, MDX_CONFIG } from "./song-separator.mjs?v=20261114-local2";
+import { separateStereo, MDX_CONFIG } from "./song-separator.mjs?v=20261114-mobile3";
 
 let cancelled = false;
 

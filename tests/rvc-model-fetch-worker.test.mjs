@@ -81,6 +81,24 @@ test("worker fails fast with a clear code when every mirror is unreachable", asy
   assert.equal(end.code, "RVC_MIRRORS_UNREACHABLE");
 });
 
+test("cover models return a verified Blob and skip the deadline for an unanswered mirror", async () => {
+  let slowSignal;
+  const w = loadWorker(async (url, { signal } = {}) => {
+    if (url.startsWith("https://blocked.")) {
+      slowSignal = signal;
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    }
+    return new Response(parts[Number(url.slice(-1))]);
+  });
+  const started = performance.now();
+  const done = await w.run(job({ returnBlob: true, probeMs: 2200 }));
+  assert.equal(done.type, "done");
+  assert.equal(done.buffer, undefined);
+  assert.deepEqual(Buffer.from(await done.blob.arrayBuffer()), Buffer.concat(parts));
+  assert.equal(slowSignal.aborted, true);
+  assert.ok(performance.now() - started < 1800, "successful probe should not wait for a hung mirror");
+});
+
 test("page build version, version.json and cache-busting query strings agree", () => {
   const build = rvcSource.match(/const RVC_BUILD = "([^"]+)"/u)?.[1];
   assert.ok(build);

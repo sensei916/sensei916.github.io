@@ -14292,8 +14292,8 @@ async function runPipeline(files, callbacks = {}, options = {}, preDecodedAudio)
     return ctx;
   }
 }
-const post = (message) => {
-  self.postMessage(message);
+const post = (message, transfer = []) => {
+  self.postMessage(message, transfer);
 };
 const consoleProxy = {
   log: (...args) => {
@@ -14354,10 +14354,12 @@ self.onmessage = async (event) => {
     const serializableResult = {
       ...result,
       // Clear non-serializable session object
-      modelSession: void 0
+      modelSession: void 0,
+      outputAudio: options?.wavOnly ? void 0 : result.outputAudio
     };
     consoleProxy.log("[Worker] Pipeline complete!");
-    post({ type: "COMPLETE", result: serializableResult });
+    const samples = serializableResult.outputAudio?.buffer;
+    post({ type: "COMPLETE", result: serializableResult }, samples ? [samples] : []);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown worker error";
     const errorCode = error instanceof RvcError ? error.code : ErrorCodes.WORKER_UNKNOWN_ERROR;

@@ -1,6 +1,6 @@
 // Module Worker for the v3 on-device master (loudness match + true-peak
 // limiter). Keeps the O(n * taps) oversampling off the main thread.
-import { masterMix } from "./v3-master.mjs?v=20261114-local2";
+import { masterMix } from "./v3-master.mjs?v=20261114-mobile3";
 
 self.onmessage = (event) => {
   const { type, mix, rate, reference, options } = event.data || {};
